@@ -29,6 +29,37 @@ final class WebViewController: UIViewController {
 		static let mediaSourceURLs = "mediaSourceURLs"
 	}
 
+	func showNotebook() {
+		guard let article, let webView else {
+			return
+		}
+		let key = NotebookArticleKey(accountID: article.accountID, articleID: article.articleID)
+		let articleTitle = article.title ?? "Untitled article"
+		webView.evaluateJavaScript("document.getElementById('bodyContainer')?.innerText ?? ''") { [weak self, weak webView] value, error in
+			guard let self, let webView, self.webView === webView,
+			      self.article?.articleID == key.articleID, self.article?.accountID == key.accountID else {
+				return
+			}
+			do {
+				if let error {
+					throw error
+				}
+				guard let text = value as? String else {
+					throw NotebookError.invalidInput("The rendered article text is unavailable.")
+				}
+				let snapshot = try NotebookSnapshot(key: key, title: articleTitle, text: text)
+				let controller = UINavigationController(rootViewController: NotebookViewController(snapshot: snapshot))
+				controller.modalPresentationStyle = .pageSheet
+				controller.sheetPresentationController?.detents = [.large()]
+				self.present(controller, animated: true)
+			} catch {
+				let alert = UIAlertController(title: "Notebook unavailable", message: error.localizedDescription, preferredStyle: .alert)
+				alert.addAction(UIAlertAction(title: "OK", style: .default))
+				self.present(alert, animated: true)
+			}
+		}
+	}
+
 	private var topShowBarsView: UIView!
 	private var bottomShowBarsView: UIView!
 	private var topShowBarsViewConstraint: NSLayoutConstraint!

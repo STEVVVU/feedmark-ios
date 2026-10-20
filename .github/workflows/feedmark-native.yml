@@ -38,4 +38,7 @@ jobs:
             .audit/verification/*/*.png
             .audit/verification/*/*.xcresult/**
             .audit/verification/*/maestro-evidence/**
+            .audit/verification/*/notebook-evidence/**
+            .audit/verification/*/reopen-evidence/**
+            .audit/verification/*/native-artifacts/**
           retention-days: 7

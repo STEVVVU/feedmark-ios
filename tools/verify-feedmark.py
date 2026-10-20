@@ -146,11 +146,50 @@ def main():
                         "- assertVisible: 'Local synthetic article for native reader verification.*'\n"
                         "- takeScreenshot: article\n", encoding="utf-8")
         command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "native-junit.xml",
-                 "--debug-output", run / "maestro-evidence", flow], "maestro.log", timeout=300)
+                 "--debug-output", run / "maestro-evidence", "--test-output-dir", run / "native-artifacts", flow], "maestro.log", timeout=300)
         assert any(item["path"] == "/feed.xml" for item in requests), "The actual app did not fetch the controlled RSS source."
         command(["xcrun", "simctl", "io", simulator, "screenshot", run / "native-article.png"], "simulator.log", timeout=30)
         assert (run / "native-article.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
         result["actions"].append({"action": "native-read", "feedRequests": len(requests), "screenshot": "native-article.png"})
+        notebook_flow = run / "notebook.yaml"
+        notebook_flow.write_text("appId: " + bundle_id + "\n---\n"
+                                 "- tapOn: 'Reading notebook'\n"
+                                 "- assertVisible: 'Capture selected passage'\n"
+                                 "- tapOn:\n    id: notebook.captureWhole\n"
+                                 "- scrollUntilVisible:\n    element:\n      id: notebook.note\n    direction: DOWN\n"
+                                 "- tapOn:\n    id: notebook.note\n"
+                                 "- inputText: 'Source context matters'\n"
+                                 "- hideKeyboard\n"
+                                 "- scrollUntilVisible:\n    element:\n      id: notebook.save\n    direction: DOWN\n"
+                                 "- tapOn:\n    id: notebook.save\n"
+                                 "- assertVisible: 'Note saved on this device.'\n"
+                                 "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
+                                 "- assertVisible: 'Attached to this snapshot'\n"
+                                 "- takeScreenshot: notebook-saved\n", encoding="utf-8")
+        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "notebook-junit.xml",
+                 "--debug-output", run / "notebook-evidence", "--test-output-dir", run / "native-artifacts", notebook_flow], "maestro.log", timeout=300)
+        container = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"]).decode().strip())
+        notebook_file = container / "Library/Application Support/FeedmarkNotebook/notes.json"
+        saved_bytes = notebook_file.read_bytes()
+        (run / "notebook-saved.json").write_bytes(saved_bytes)
+        saved = json.loads(saved_bytes)
+        assert saved["version"] == 1 and len(saved["notes"]) == 1
+        assert saved["notes"][0]["note"] == "Source context matters"
+        assert saved["notes"][0]["anchors"][0]["quote"] == "Local synthetic article for native reader verification."
+        result["actions"].append({"action": "native-save-note", "notes": 1, "originalQuoteRetained": True})
+        command(["xcrun", "simctl", "terminate", simulator, bundle_id], "simulator.log", timeout=30)
+        restore_flow = run / "notebook-reopen.yaml"
+        restore_flow.write_text("appId: " + bundle_id + "\n---\n"
+                                "- launchApp:\n    permissions:\n      all: deny\n"
+                                "- tapOn: 'Reading notebook'\n"
+                                "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
+                                "- assertVisible: 'Attached to this snapshot'\n"
+                                "- takeScreenshot: notebook-reopened\n", encoding="utf-8")
+        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "reopen-junit.xml",
+                 "--debug-output", run / "reopen-evidence", "--test-output-dir", run / "native-artifacts", restore_flow], "maestro.log", timeout=300)
+        assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
+        (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
+        result["actions"].append({"action": "native-note-restart", "exactFileRetained": True})
         result["nativeAcceptance"] = True
     except BaseException as error:
         result["error"] = str(error)

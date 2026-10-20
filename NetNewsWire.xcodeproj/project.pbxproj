@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FA1100000000000000000001 /* NotebookTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1100000000000000000002 /* NotebookTests.swift */; };
 		17192ADA2567B3D500AAEACA /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 17192AD92567B3D500AAEACA /* Sparkle */; };
 		176814002564BB2D00D98635 /* NetNewsWire iOS Widget Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 176813F32564BB2C00D98635 /* NetNewsWire iOS Widget Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		179C39EA26F76B0500D4E741 /* Zip in Frameworks */ = {isa = PBXBuildFile; productRef = 179C39E926F76B0500D4E741 /* Zip */; };
@@ -276,6 +277,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		FA1100000000000000000002 /* NotebookTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Tests/NetNewsWire-iOSTests/NotebookTests.swift"; sourceTree = SOURCE_ROOT; };
 		176813F32564BB2C00D98635 /* NetNewsWire iOS Widget Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "NetNewsWire iOS Widget Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		510C415C24E5CDE3008226FD /* NetNewsWire Share Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "NetNewsWire Share Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		513C5CE6232571C2003D4054 /* NetNewsWire iOS Share Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "NetNewsWire iOS Share Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -349,6 +351,7 @@
 			membershipExceptions = (
 				"NetNewsWire-iOSTests/ActivityItemSourceTests.swift",
 				"NetNewsWire-iOSTests/MultilineUILabelSizerTests.swift",
+				"NetNewsWire-iOSTests/NotebookTests.swift",
 			);
 			target = 849C64701ED37A5D003D8FC0 /* NetNewsWireTests */;
 		};
@@ -571,6 +574,7 @@
 			children = (
 				84719F4B2EE01A1100EEF332 /* Tests/NetNewsWire-iOSTests/ActivityItemSourceTests.swift */,
 				84719F4D2EE01A1100EEF332 /* Tests/NetNewsWire-iOSTests/MultilineUILabelSizerTests.swift */,
+				FA1100000000000000000002 /* NotebookTests.swift */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -1167,6 +1171,7 @@
 			files = (
 				84719F4C2EE01A1100EEF332 /* Tests/NetNewsWire-iOSTests/ActivityItemSourceTests.swift in Sources */,
 				84719F4E2EE01A1100EEF332 /* Tests/NetNewsWire-iOSTests/MultilineUILabelSizerTests.swift in Sources */,
+				FA1100000000000000000001 /* NotebookTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

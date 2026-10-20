@@ -159,6 +159,9 @@ final class ArticleViewController: UIViewController {
 				actionBarButtonItem
 			]
 		}
+		let notebookItem = UIBarButtonItem(image: UIImage(systemName: "note.text"), style: .plain, target: self, action: #selector(showNotebook))
+		notebookItem.accessibilityLabel = "Reading notebook"
+		toolbarItems?.append(notebookItem)
 
 		pageViewController = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal, options: [:])
 		pageViewController.delegate = self
@@ -370,6 +373,10 @@ final class ArticleViewController: UIViewController {
 
 	@IBAction func showActivityDialog(_ sender: Any) {
 		currentWebViewController?.showActivityDialog(popOverBarButtonItem: actionBarButtonItem)
+	}
+
+	@objc private func showNotebook() {
+		currentWebViewController?.showNotebook()
 	}
 
 	@objc func toggleReaderView(_ sender: Any?) {
