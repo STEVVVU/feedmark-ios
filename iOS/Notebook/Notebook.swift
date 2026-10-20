@@ -35,6 +35,7 @@ struct NotebookSnapshot: Sendable {
 	static func validatedRange(_ selection: NSRange, in text: String) -> Range<String.Index>? {
 		guard selection.location >= 0, selection.location <= text.utf16.count,
 		      selection.length > 0, selection.length <= text.utf16.count - selection.location,
+		      (text as NSString).rangeOfComposedCharacterSequences(for: selection) == selection,
 		      let range = Range(selection, in: text), NSRange(range, in: text) == selection else {
 			return nil
 		}

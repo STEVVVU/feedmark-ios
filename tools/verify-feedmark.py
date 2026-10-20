@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -14,6 +15,7 @@ import threading
 import time
 import urllib.request
 import zipfile
+from xml.sax.saxutils import escape as xml_escape
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +45,9 @@ def main():
     fixture_path = ROOT / "Shared/Importers/DefaultFeeds.opml"
     original_fixture = fixture_path.read_bytes()
     requests = []
+    original_article = "Local synthetic article for native reader verification."
+    fixture = {"version": "original", "paragraphs": [original_article]}
+    fixture_lock = threading.Lock()
 
     def command(argv, log_name, timeout=1800):
         print("RUN " + " ".join(str(part) for part in argv), flush=True)
@@ -77,17 +82,20 @@ def main():
 
         class FixtureHandler(BaseHTTPRequestHandler):
             def do_GET(self):
-                requests.append({"path": self.path, "method": "GET"})
+                with fixture_lock:
+                    version = fixture["version"]
+                    body = "".join("<p>" + escape(paragraph) + "</p>" for paragraph in fixture["paragraphs"])
+                    requests.append({"path": self.path, "method": "GET", "version": version})
                 if self.path == "/feed.xml":
                     payload = ("<?xml version='1.0'?><rss version='2.0'><channel><title>Feedmark verification feed</title>"
                                "<link>http://127.0.0.1:{port}/</link><description>Synthetic local verification</description>"
                                "<item><title>Evidence survives the network</title><guid isPermaLink='false'>feedmark-fixture-001</guid>"
                                "<link>http://127.0.0.1:{port}/article</link>"
-                               "<description>Local synthetic article for native reader verification.</description>"
-                               "</item></channel></rss>").format(port=self.server.server_port).encode()
+                               "<description>{description}</description>"
+                               "</item></channel></rss>").format(port=self.server.server_port, description=xml_escape(body)).encode()
                     content_type = "application/rss+xml"
                 elif self.path in ("/", "/article"):
-                    payload = b"<html><body>Local synthetic article for native reader verification.</body></html>"
+                    payload = ("<html><body>" + body + "</body></html>").encode()
                     content_type = "text/html"
                 else:
                     self.send_error(404)
@@ -95,6 +103,7 @@ def main():
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(payload)
 
@@ -158,6 +167,7 @@ def main():
         assert any(item["path"] == "/feed.xml" for item in requests), "The actual app did not fetch the controlled RSS source."
         command(["xcrun", "simctl", "io", simulator, "screenshot", run / "native-article.png"], "simulator.log", timeout=30)
         assert (run / "native-article.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        command([maestro, "--device", simulator, "hierarchy", "--no-reinstall-driver"], "article-hierarchy.log", timeout=60)
         result["actions"].append({"action": "native-read", "feedRequests": len(requests), "screenshot": "native-article.png"})
         notebook_flow = run / "notebook.yaml"
         notebook_flow.write_text("appId: " + bundle_id + "\n---\n"
@@ -198,6 +208,7 @@ def main():
         assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
         (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
         result["actions"].append({"action": "native-note-restart", "exactFileRetained": True})
+        command([maestro, "--device", simulator, "hierarchy", "--no-reinstall-driver"], "notebook-hierarchy.log", timeout=60)
         result["nativeAcceptance"] = True
     except BaseException as error:
         result["error"] = str(error)

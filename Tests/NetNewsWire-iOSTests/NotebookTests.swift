@@ -61,6 +61,21 @@ import Testing
 		#expect(restored.resolve(in: try makeSnapshot("Intro. " + text)) == .relocated(NSRange(location: 7, length: text.utf16.count)))
 	}
 
+	@Test func acceptedUnicodeSelectionsRemainSerializable() throws {
+		let snapshot = try makeSnapshot("😀 👩🏽‍💻 café 🇺🇸")
+		for start in 0..<snapshot.text.utf16.count {
+			for length in 1...(snapshot.text.utf16.count - start) {
+				let selection = NSRange(location: start, length: length)
+				guard let anchor = try? NotebookAnchor(snapshot: snapshot, selection: selection) else {
+					continue
+				}
+				#expect(anchor.isValid)
+				#expect(anchor.quote.utf16.count == length)
+				#expect(try JSONDecoder().decode(NotebookAnchor.self, from: JSONEncoder().encode(anchor)) == anchor)
+			}
+		}
+	}
+
 	@Test func savedNoteAndOriginalQuoteSurviveStoreReopenAndRepair() throws {
 		try withStore { store, file in
 			let text = "A useful passage for a native notebook."
@@ -117,6 +132,87 @@ import Testing
 			let second = try store.add(snapshot: snapshot, selection: NSRange(location: 2, length: 6), note: "Second")
 			try store.remove(id: first.id, key: key)
 			#expect(try NotebookStore(fileURL: file).notes(for: key) == [second])
+		}
+	}
+
+	@Test func editCorpusReportsAttachmentTradeoffs() throws {
+		let passage = "A useful passage for a native notebook."
+		let unicode = "Read 👩🏽‍💻 and café with care."
+		let cases: [AttachmentCase] = [
+			AttachmentCase("unchanged", original: passage, updated: passage, target: NSRange(location: 0, length: passage.utf16.count)),
+			AttachmentCase("prepend", original: passage, updated: "New introduction. " + passage,
+			               target: NSRange(location: 18, length: passage.utf16.count)),
+			AttachmentCase("deleted-long-document", original: passage, updated: "No retained passage remains in this article.", target: nil),
+			AttachmentCase("indistinguishable-duplicates", original: passage, updated: passage + "\n" + passage, target: nil),
+			AttachmentCase("earlier-decoy", original: "before target after", selection: NSRange(location: 7, length: 6),
+			               updated: "other target context\nbefore target after", target: NSRange(location: 28, length: 6)),
+			AttachmentCase("retained-quote-changed-context", original: "before target after", selection: NSRange(location: 7, length: 6),
+			               updated: "different target meaning", target: NSRange(location: 10, length: 6)),
+			AttachmentCase("unicode-prepend", original: unicode, updated: "Intro. " + unicode,
+			               target: NSRange(location: 7, length: unicode.utf16.count)),
+			AttachmentCase("same-length-quote-edit", original: passage, updated: "A useful passage for a native noteb00k.",
+			               target: NSRange(location: 0, length: passage.utf16.count)),
+			AttachmentCase("deleted-short-document", original: passage, updated: "Removed.", target: nil),
+			AttachmentCase("many-indistinguishable-copies", original: "before target after", selection: NSRange(location: 7, length: 6),
+			               updated: String(repeating: "before target after ", count: 501), target: nil),
+			AttachmentCase("whitespace-in-quote", original: passage, updated: "A useful  passage for a native notebook.",
+			               target: NSRange(location: 0, length: passage.utf16.count + 1))
+		]
+		var totals = ["offset": AttachmentScore(), "firstQuote": AttachmentScore(), "conservative": AttachmentScore()]
+		for item in cases {
+			let original = try makeSnapshot(item.original)
+			let anchor = try NotebookAnchor(snapshot: original, selection: item.selection)
+			let changed = try makeSnapshot(item.updated)
+			let first = (item.updated as NSString).range(of: anchor.quote, options: .literal)
+			let offset = NotebookSnapshot.validatedRange(item.selection, in: item.updated) == nil ? nil : item.selection
+			let firstQuote = first.location == NSNotFound ? nil : first
+			let conservative: NSRange?
+			switch anchor.resolve(in: changed) {
+			case .exact(let range), .relocated(let range): conservative = range
+			case .ambiguous, .missing: conservative = nil
+			}
+			for (name, actual) in [("offset", offset), ("firstQuote", firstQuote), ("conservative", conservative)] {
+				totals[name, default: AttachmentScore()].record(actual, target: item.target)
+			}
+			print("FEEDMARK_CASE \(item.name) target=\(String(describing: item.target)) conservative=\(String(describing: conservative))")
+		}
+		#expect(totals["offset"] == AttachmentScore(correct: 2, incorrectOrUnsupported: 8, unresolved: 1))
+		#expect(totals["firstQuote"] == AttachmentScore(correct: 4, incorrectOrUnsupported: 3, unresolved: 4))
+		#expect(totals["conservative"] == AttachmentScore(correct: 4, incorrectOrUnsupported: 0, unresolved: 7))
+		print("FEEDMARK_CORPUS " + String(decoding: try JSONEncoder().encode(totals), as: UTF8.self))
+	}
+
+	private struct AttachmentCase {
+		let name: String
+		let original: String
+		let selection: NSRange
+		let updated: String
+		let target: NSRange?
+
+		init(_ name: String, original: String, selection: NSRange? = nil, updated: String, target: NSRange?) {
+			self.name = name
+			self.original = original
+			self.selection = selection ?? NSRange(location: 0, length: original.utf16.count)
+			self.updated = updated
+			self.target = target
+		}
+	}
+
+	private struct AttachmentScore: Codable, Equatable {
+		var correct = 0
+		var incorrectOrUnsupported = 0
+		var unresolved = 0
+
+		mutating func record(_ actual: NSRange?, target: NSRange?) {
+			guard let actual else {
+				unresolved += 1
+				return
+			}
+			if actual == target {
+				correct += 1
+			} else {
+				incorrectOrUnsupported += 1
+			}
 		}
 	}
 
