@@ -31,6 +31,15 @@ struct NotebookSnapshot: Sendable {
 	static func hash(_ text: String) -> String {
 		SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
 	}
+
+	static func validatedRange(_ selection: NSRange, in text: String) -> Range<String.Index>? {
+		guard selection.location >= 0, selection.location <= text.utf16.count,
+		      selection.length > 0, selection.length <= text.utf16.count - selection.location,
+		      let range = Range(selection, in: text), NSRange(range, in: text) == selection else {
+			return nil
+		}
+		return range
+	}
 }
 
 struct NotebookAnchor: Codable, Equatable, Sendable {
@@ -43,9 +52,11 @@ struct NotebookAnchor: Codable, Equatable, Sendable {
 	let snapshotDigest: String
 
 	init(snapshot: NotebookSnapshot, selection: NSRange) throws {
-		guard selection.length > 0, selection.length <= 4000,
-		      let range = Range(selection, in: snapshot.text) else {
-			throw NotebookError.invalidInput("Select a passage of 1 to 4,000 text units first.")
+		guard selection.length <= 4000 else {
+			throw NotebookError.invalidInput("This passage is too long. Select a shorter passage.")
+		}
+		guard let range = NotebookSnapshot.validatedRange(selection, in: snapshot.text) else {
+			throw NotebookError.invalidInput("Select a passage in the article text first.")
 		}
 		quote = String(snapshot.text[range])
 		prefix = String(snapshot.text[..<range.lowerBound].suffix(40))
@@ -66,7 +77,7 @@ struct NotebookAnchor: Codable, Equatable, Sendable {
 			return .missing
 		}
 		let original = NSRange(location: start, length: length)
-		if snapshot.digest == snapshotDigest, let range = Range(original, in: snapshot.text), snapshot.text[range] == quote {
+		if snapshot.digest == snapshotDigest, let range = NotebookSnapshot.validatedRange(original, in: snapshot.text), snapshot.text[range] == quote {
 			return .exact(original)
 		}
 		let text = snapshot.text as NSString
@@ -75,12 +86,16 @@ struct NotebookAnchor: Codable, Equatable, Sendable {
 		var supported = [NSRange]()
 		while cursor < text.length {
 			let found = text.range(of: quote, options: .literal, range: NSRange(location: cursor, length: text.length - cursor))
-			guard found.location != NSNotFound, let range = Range(found, in: snapshot.text) else {
+			guard found.location != NSNotFound else {
 				break
 			}
+			cursor = found.location + 1
 			inspected += 1
 			if inspected > 500 {
 				return .ambiguous
+			}
+			guard let range = NotebookSnapshot.validatedRange(found, in: snapshot.text) else {
+				continue
 			}
 			let before = snapshot.text[..<range.lowerBound]
 			let after = snapshot.text[range.upperBound...]
@@ -92,7 +107,6 @@ struct NotebookAnchor: Codable, Equatable, Sendable {
 					return .ambiguous
 				}
 			}
-			cursor = found.location + 1
 		}
 		guard let match = supported.first else {
 			return .missing
@@ -134,7 +148,7 @@ struct NotebookNote: Codable, Equatable, Identifiable, Sendable {
 		      !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, note.count <= 4000,
 		      !anchors.isEmpty, anchors.count <= 21, anchors.allSatisfy(\.isValid),
 		      let first = anchors.first, first.snapshotDigest == NotebookSnapshot.hash(originalText),
-		      let range = Range(NSRange(location: first.start, length: first.length), in: originalText) else {
+		      let range = NotebookSnapshot.validatedRange(NSRange(location: first.start, length: first.length), in: originalText) else {
 			return false
 		}
 		return originalText[range] == first.quote

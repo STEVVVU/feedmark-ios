@@ -60,13 +60,18 @@ import UIKit
 		bodyText.heightAnchor.constraint(equalToConstant: 240).isActive = true
 		stack.addArrangedSubview(bodyText)
 		stack.addArrangedSubview(button("Capture selected passage", identifier: "notebook.capture") { [weak self] in self?.capture() })
-		stack.addArrangedSubview(button("Capture whole article", identifier: "notebook.captureWhole") { [weak self] in
+		let wholeArticle = button("Capture whole article", identifier: "notebook.captureWhole") { [weak self] in
 			guard let self else {
 				return
 			}
 			bodyText.selectedRange = NSRange(location: 0, length: snapshot.text.utf16.count)
 			capture()
-		})
+		}
+		wholeArticle.isEnabled = snapshot.text.utf16.count <= 4000
+		stack.addArrangedSubview(wholeArticle)
+		if !wholeArticle.isEnabled {
+			stack.addArrangedSubview(label("Whole-article notes are limited to short articles. Select a passage instead.", style: .caption1))
+		}
 		selectedQuote.numberOfLines = 0
 		selectedQuote.font = .preferredFont(forTextStyle: .callout)
 		selectedQuote.adjustsFontForContentSizeCategory = true

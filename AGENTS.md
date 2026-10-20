@@ -7,3 +7,5 @@ The Windows checkout has no Xcode. Use `.agents/skills/verify-feedmark/SKILL.md`
 Keep feature acceptance in the verification skill's feature map. A compile, unit test or cloned upstream feature does not establish original native workflow evidence. Inspect actual retained screenshots and side effects. Generated run data belongs in ignored `.audit/verification/`; maintained drivers belong in `tools/`.
 
 The iOS app uses filesystem-synchronized sources. The iOS test target has explicit source membership in `NetNewsWire.xcodeproj/project.pbxproj`; update it when adding native tests. Existing Swift compiler and warning gates remain enforced.
+
+The owned workflow also runs the repository's existing SwiftLint rules against changed native sources using a checksum-pinned official portable release. The Windows SwiftLint binary was tried and could not load sourcekitdInProc.dll; that local attempt is not a lint pass. Use the actual hosted SourceKit/Xcode environment rather than disabling checks.

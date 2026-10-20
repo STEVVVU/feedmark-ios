@@ -49,6 +49,8 @@ import Testing
 		let snapshot = try makeSnapshot("😀 A useful passage for a native notebook.")
 		#expect(throws: (any Error).self) { try NotebookAnchor(snapshot: snapshot, selection: NSRange(location: 1, length: 1)) }
 		#expect(throws: (any Error).self) { try NotebookAnchor(snapshot: snapshot, selection: NSRange(location: 0, length: 0)) }
+		#expect(NotebookSnapshot.validatedRange(NSRange(location: Int.max - 1, length: 4), in: snapshot.text) == nil)
+		#expect(NotebookSnapshot.validatedRange(NSRange(location: 0, length: 1), in: snapshot.text) == nil)
 	}
 
 	@Test func unicodeQuoteSurvivesSerializationAndRelocation() throws {
