@@ -11,6 +11,7 @@ import plistlib
 import re
 import subprocess
 import threading
+import time
 import urllib.request
 import zipfile
 
@@ -56,7 +57,14 @@ def main():
     try:
         command(["xcodebuild", "-version"], "doctor.log", timeout=30)
         command(["java", "-version"], "doctor.log", timeout=15)
-        inventory = json.loads(output(["xcrun", "simctl", "list", "--json"]))
+        inventory_started = time.monotonic()
+        try:
+            command(["xcrun", "simctl", "list", "--json"], "simulator-inventory.log", timeout=120)
+        finally:
+            result["actions"].append({"action": "simulator-inventory-probe",
+                                      "elapsedSeconds": round(time.monotonic() - inventory_started, 3),
+                                      "deadlineSeconds": 120})
+        inventory = json.loads((run / "simulator-inventory.log").read_text(encoding="utf-8"))
         (run / "simulator-inventory.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
         runtimes = [item for item in inventory["runtimes"] if item.get("isAvailable") and item["name"].startswith("iOS")]
         runtime = max(runtimes, key=lambda item: tuple(int(part) for part in item["version"].split(".")))
