@@ -1,0 +1,38 @@
+---
+name: verify-feedmark
+description: Build and drive the real iOS reader on an isolated hosted simulator with controlled RSS input and retained native evidence.
+---
+
+# Verify Feedmark
+
+Status: draft. No local Xcode or iOS simulator is installed on the Windows workspace. A native build alone is not proof of the reading workflow.
+
+## Launch
+
+Use the `Feedmark native checks` workflow on branch `feedmark`. Its maintained driver is `python tools/verify-feedmark.py <unique-run-name>`. It refuses execution outside a dedicated macOS GitHub runner. Xcode 26.3, the iPhone 17 device type and an available iOS runtime must already exist. It creates an owned simulator, never resets a user's simulator, accepts no Xcode terms and uses the upstream unsigned simulator configuration. No developer account or provisioning update is used.
+
+The driver builds and runs the upstream iOS test plan. For this isolated build only, it replaces the bundled default feed list with a loopback synthetic RSS source and restores the original bytes during cleanup. This is verification input, not a replacement product feed list. Service API-key environment variables are removed before generating the upstream Secrets source. The test fixture uses the normal local-feed account and reader path.
+
+## Doctor
+
+Capture actual Xcode/Java versions, installed simulator inventory, the created simulator UDID/runtime and build/test logs. Read the bundle identifier from the built app. Do not infer a working simulator from a workflow dispatch. A missing runtime, unaccepted setup, compilation error or native driver failure keeps onboarding a draft.
+
+## Drive
+
+Maestro CLI 2.11.0 is a test-only tool, downloaded from its official GitHub release and verified against SHA256 `5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a`. It is Apache-2.0 licensed. Run only against the created simulator. Analytics and update checks are disabled; no cloud or AI command is invoked. All requested app permissions are denied explicitly.
+
+The generated baseline flow selects `Feedmark verification feed`, opens `Evidence survives the network` and verifies the synthetic article text. Screenshots cover the sidebar, timeline and article. The driver also verifies that the actual app fetched `/feed.xml`. See [the feature map](features/README.md). Existing iOS unit tests are additional evidence, not a substitute for this native path.
+
+## Evidence
+
+Keep `.audit/verification/<run>/result.json`, HTTP request records, native PNGs, Maestro artifacts/JUnit and Xcode result bundle/logs. The hosted workflow uploads them for inspection. Download and view actual screenshots before accepting native rendering. No original annotation, edit or collaboration feature has been implemented or verified by this baseline.
+
+## Cleanup
+
+Restore the original OPML bytes, shut down only the created simulator UDID and close the owned loopback RSS server. Retain the simulator profile, all evidence and logs until the hosted job ends. The driver does not delete user profiles or stop unrelated simulators. Confirm shutdown, fixture restoration and evidence retention in `result.json` after failures as well as success.
+
+## Sources and limits
+
+Upstream is Ranchero-Software/NetNewsWire at `94032d95fe04a05d44591450234c3c5da0a40842`, with original MIT notices and complete history retained. The Windows working tree sparsely excludes only `/AppStore/` marketing assets because an upstream filename contains a quote; hosted macOS checkout is complete. Existing build warnings remain enforced by `buildscripts/fail_on_warnings.sh`. The app dependency audit, physical-device behavior, macOS app and original feature acceptance remain outside this onboarding proof.
+
+Maestro primary references: [release](https://github.com/mobile-dev-inc/Maestro/releases/tag/cli-2.11.0), [source license](https://github.com/mobile-dev-inc/Maestro/blob/cli-2.11.0/LICENSE), [CLI](https://docs.maestro.dev/maestro-cli), [environment variables](https://docs.maestro.dev/maestro-cli/environment-variables).

@@ -92,3 +92,6 @@ fastlane/test_output
 
 .claude/
 
+.audit/
+.tooling/
+
