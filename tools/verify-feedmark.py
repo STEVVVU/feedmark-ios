@@ -167,7 +167,6 @@ def main():
         assert any(item["path"] == "/feed.xml" for item in requests), "The actual app did not fetch the controlled RSS source."
         command(["xcrun", "simctl", "io", simulator, "screenshot", run / "native-article.png"], "simulator.log", timeout=30)
         assert (run / "native-article.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-        command([maestro, "--device", simulator, "hierarchy", "--no-reinstall-driver"], "article-hierarchy.log", timeout=60)
         result["actions"].append({"action": "native-read", "feedRequests": len(requests), "screenshot": "native-article.png"})
         notebook_flow = run / "notebook.yaml"
         notebook_flow.write_text("appId: " + bundle_id + "\n---\n"
@@ -208,7 +207,6 @@ def main():
         assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
         (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
         result["actions"].append({"action": "native-note-restart", "exactFileRetained": True})
-        command([maestro, "--device", simulator, "hierarchy", "--no-reinstall-driver"], "notebook-hierarchy.log", timeout=60)
         result["nativeAcceptance"] = True
     except BaseException as error:
         result["error"] = str(error)

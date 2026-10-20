@@ -1,95 +1,38 @@
-<img src=Technotes/Images/icon_1024.png height=128 width=128 style="display: block; margin: auto;"> 
+# Feedmark
 
-# NetNewsWire
+A native iOS reading notebook built on the complete NetNewsWire app. Save why an article matters, keep the original quotation, and check whether that passage still has a defensible attachment when the article changes.
 
-NetNewsWire is a free and open-source feed reader for macOS and iOS.
+The upstream reader supplies feeds, article rendering, accounts and SQLite storage. This fork adds the Swift/UIKit notebook, quote descriptors and resolver, atomic local note archive, explicit repair history and native verification tooling. Original MIT notices and Git history are retained. [Unmodified upstream README](README.upstream.md).
 
-It supports [RSS](https://cyber.harvard.edu/rss/rss.html), [Atom](https://datatracker.ietf.org/doc/html/rfc4287), [JSON Feed](https://jsonfeed.org/), and [RSS-in-JSON](https://github.com/scripting/Scripting-News/blob/master/rss-in-json/README.md) formats.
+## Workflow
 
-More info: [https://netnewswire.com/](https://netnewswire.com/)
+1. Open an article and tap **Reading notebook** in its toolbar.
+2. Select a passage and capture it, or capture a short whole article. Write your note and save.
+3. Reopen the app to recover the note. After refreshing an article, reopen its notebook to check attachment status against the new text.
+4. If the passage is missing or ambiguous, the original quote remains visible. Select a new passage and explicitly repair the note. Prior descriptors remain in its history.
 
-You can [report bugs and make feature requests](https://github.com/Ranchero-Software/NetNewsWire/issues) here on GitHub. You can also [read change notes](https://github.com/Ranchero-Software/NetNewsWire/releases/) for current and previous releases.
+The sheet freezes the rendered text it opened with. It never silently includes later background changes. The resolver first checks the original snapshot digest and position. After a change it checks exact quotation/context evidence; multiple supported matches remain ambiguous. Short or changed-context matches can remain unresolved. This favors a visible unresolved note over an unjustified attachment, but does not guarantee semantic identity.
 
-Here’s [How to Support NetNewsWire](Technotes/HowToSupportNetNewsWire.markdown). Spoiler: don’t send money. :)
+## Run and verify
 
-(NetNewsWire’s Help menu has these links, so you don’t have to remember to come back to this page.)
+The app requires macOS, Xcode 26.3 and an installed iOS simulator. It runs without a news-service account using NetNewsWire's local feeds. This repository's work is scoped to iOS; the upstream macOS app is retained.
 
-#### Community
+Use **Feedmark native checks** in [Actions](https://github.com/STEVVVU/feedmark-ios/actions/workflows/feedmark-native.yml). It builds the unsigned real app, runs the iOS test plan and the existing warning gate, drives native Maestro flows against controlled loopback RSS, retains screenshots and actual app-container data, then shuts down its owned simulator/server. No model/provider key or signing portal is involved.
 
-[Join the forum](https://discourse.netnewswire.com/) to talk with other NetNewsWire users — and to help out, if you’d like to, by testing, coding, writing, providing feedback, or just helping us think things through. Everybody is welcome and encouraged to join.
+For local source work, use the `NetNewsWire-iOS` scheme and see the [verification skill](.agents/skills/verify-feedmark/SKILL.md) for the exact unsigned build configuration, test commands and maintained feature map.
 
-Every community member is expected to abide by the [code of conduct](CONTRIBUTING.md#code-of-conduct) which is included in the [Contributing](CONTRIBUTING.md) page.
+## Evidence and limits
 
-#### Pull Requests
+The unmodified native reading baseline passed [run 39508929461](https://github.com/STEVVVU/feedmark-ios/actions/runs/39508929461): five existing iOS tests, the warning gate, an actual RSS fetch and native article-opening flow, inspected screenshot and cleanup. The [latest mechanism run](https://github.com/STEVVVU/feedmark-ios/actions/runs/39515496476) passed all 20 iOS tests, hosted SwiftLint and the warning gate, including the original Unicode regression and an exhaustive small Unicode-subrange check. Its real reader flow also passed. An extra hierarchy diagnostic then timed out before notebook driving; native capture/save/restart acceptance is still pending.
 
-See the [Contributing](CONTRIBUTING.md) page for our process. They key thing is to ask before doing a PR (before even starting work). The Contributing page goes into more detail as to why it’s important to ask first.
+Notes use an app-sandbox JSON archive written atomically by one main-actor store. No sync, encryption, backup exclusion or cross-process writer is claimed. Bounds are 200 notes, 20 repairs per note, 100,000 UTF-16 units of article text and 4,000 units per captured quote. A failed or corrupt archive read does not reset the existing file. A changed article can deliberately leave a quote unresolved.
 
-#### Building
+Native partial-selection gestures, content-change recovery, repair/removal and broader device/accessibility coverage still need real-product evidence. No real-user study, production operation, full dependency-security audit or research-quality recovery rate is claimed.
 
-You can build and test NetNewsWire without a paid developer account.
+## Research and course connection
 
-```bash
-git clone https://github.com/Ranchero-Software/NetNewsWire.git
-```
+[Robust Intra-document Locations, Phelps and Wilensky, WWW2000](https://www.ra.ethz.ch/cdstore/www9/312/312.html) motivates retaining redundant location evidence and making uncertainty visible. This implementation uses a bounded quote/context policy; it does not reproduce the full UID/tree-walk/Multivalent system.
 
-You can locally override the Xcode settings for code signing
-by creating a `DeveloperSettings.xcconfig` file locally at the appropriate path.
-This allows for a pristine project with code signing set up with the appropriate
-developer ID and certificates, and for developer to be able to have local settings
-without needing to check in anything into source control.
+[Stanford CS249B's historical advanced project brief](https://web.stanford.edu/class/cs249b/projects.html) provides an adjacent design/implementation/experiment structure. It is not a mobile assignment or a claim of course completion. The eleven-edit controlled comparison passed on the native SDK: the conservative policy recorded 4 correct, 0 incorrect/unsupported and 7 unresolved outcomes. Three unresolved cases still had a surviving target; this is a visible recovery tradeoff. It reports correct, incorrect/unsupported and unresolved outcomes together. See [the declared protocol](docs/feedmark/attachment-evaluation.md).
 
-You can do this in one of two ways: using the included `setup.sh` script or by creating the folder structure and file manually.
-
-##### Using `setup.sh`
-
-- Open Terminal and `cd` into the NetNewsWire directory. 
-- Run this command to ensure you have execution rights for the script: `chmod +x setup.sh`
-- Execute the script with the following command: `./setup.sh` and complete the answers.
-
-##### Manually 
-
-Make a directory `SharedXcodeSettings` next to where you have this repository.
-
-The directory structure is:
-
-```
-directory/
-  SharedXcodeSettings/
-    DeveloperSettings.xcconfig
-  NetNewsWire/
-    NetNewsWire.xcodeproj
-```
-Example:
-
-If your NetNewsWire Xcode project file is at:
-`/Users/name/projects/NetNewsWire/NetNewsWire.xcodeproj`
-
-Create your `DeveloperSettings.xcconfig` file at
-`/Users/name/projects/SharedXcodeSettings/DeveloperSettings.xcconfig`
-
-Then create a plain text file in it: `SharedXcodeSettings/DeveloperSettings.xcconfig` and
-give it the contents:
-
-```
-CODE_SIGN_IDENTITY = Mac Developer
-DEVELOPMENT_TEAM = <Your Team ID>
-CODE_SIGN_STYLE = Automatic
-ORGANIZATION_IDENTIFIER = <Your Domain Name Reversed>
-DEVELOPER_ENTITLEMENTS = -dev
-PROVISIONING_PROFILE_SPECIFIER =
-```
-
-Set `DEVELOPMENT_TEAM` to your Apple supplied development team.  You can use Keychain
-Access to [find your development team ID](/Technotes/FindingYourDevelopmentTeamID.md).
-Set `ORGANIZATION_IDENTIFIER` to a reversed domain name that you control or have made up.
-Note that `PROVISIONING_PROFILE_SPECIFIER` should not have a value associated with it.
-
-You can now open the `NetNewsWire.xcodeproj` in Xcode.
-
-Now you should be able to build without code signing errors and without modifying
-the NetNewsWire Xcode project.  This is a special build of NetNewsWire with some
-functionality disabled.  This is because we have API keys that can't be stored in the
-repository or shared between developers.  Certain account types, like iCloud and Feedly, aren't
-enabled and the Reader View isn't enabled because of this.
-
-If you have any problems, we will help you out in the forum ([see above](README.md#Community)).
+Swift, UIKit, WebKit and CryptoKit implement the notebook alongside the upstream SQLite-backed reader. Python and pinned Maestro/SwiftLint releases support repeatable verification. The upstream base is [Ranchero-Software/NetNewsWire at 94032d95](https://github.com/Ranchero-Software/NetNewsWire/tree/94032d95fe04a05d44591450234c3c5da0a40842).

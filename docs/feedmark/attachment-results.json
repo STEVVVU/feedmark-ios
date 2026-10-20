@@ -1,0 +1,23 @@
+{
+  "sourceCommit": "1c6563471aa3a9ba7a272874f4958c4a42bf7839",
+  "run": "https://github.com/STEVVVU/feedmark-ios/actions/runs/39515496476",
+  "caseCount": 11,
+  "metrics": {
+    "offset": {
+      "correct": 2,
+      "unresolved": 1,
+      "incorrectOrUnsupported": 8
+    },
+    "firstQuote": {
+      "correct": 4,
+      "unresolved": 4,
+      "incorrectOrUnsupported": 3
+    },
+    "conservative": {
+      "correct": 4,
+      "unresolved": 7,
+      "incorrectOrUnsupported": 0
+    }
+  },
+  "scope": "Hand-authored mechanism/tradeoff corpus. Not a real-world recovery-rate estimate. Unresolved includes correct abstention and missed recovery."
+}

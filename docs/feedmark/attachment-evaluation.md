@@ -1,6 +1,6 @@
 # Attachment evaluation protocol
 
-Status: the controlled corpus is implemented in `NotebookTests.editCorpusReportsAttachmentTradeoffs`; hosted execution is pending. No observed result is claimed here yet.
+Observed on [run 39515496476](https://github.com/STEVVVU/feedmark-ios/actions/runs/39515496476), source `1c6563471`: the controlled corpus passed in `NotebookTests.editCorpusReportsAttachmentTradeoffs`. All 20 iOS tests, hosted SwiftLint and the compiler warning gate passed. The overall run later failed in an extra hierarchy diagnostic before notebook UI driving, so it does not establish native notebook acceptance. [Machine-readable results](attachment-results.json).
 
 The eleven hand-authored edits compare three deterministic policies on the same input:
 
@@ -24,6 +24,14 @@ Each fixture declares its intended target range independently of the resolver. A
 | 501 indistinguishable copies | None uniquely justified | Search bound/ambiguity |
 | Added whitespace inside quote | Edited whole passage | Literal matching loses recovery |
 
-The test logs every fixture's declared and conservative target, emits `FEEDMARK_CORPUS` JSON totals, and checks the declared expected tally. Those assertions are expectations until the actual native SDK run passes. They do not constitute an independent dataset or a general recovery-rate estimate. Fixtures were selected to explain mechanisms and tradeoffs, not sampled from real articles. In particular, a low incorrect/unsupported count obtained by refusing attachments must be read with unresolved cases. There is no user study, timing benchmark, semantic-identity guarantee or claim of superiority across real feeds.
+The test logs every fixture's declared and conservative target, emits `FEEDMARK_CORPUS` JSON totals, and checks the declared expected tally. The actual SDK run emitted the following totals and passed the declared assertions. They do not constitute an independent dataset or a general recovery-rate estimate. Fixtures were selected to explain mechanisms and tradeoffs, not sampled from real articles. In particular, a low incorrect/unsupported count obtained by refusing attachments must be read with unresolved cases. There is no user study, timing benchmark, semantic-identity guarantee or claim of superiority across real feeds.
+
+| Policy | Correct | Incorrect or unsupported | Unresolved |
+| --- | ---: | ---: | ---: |
+| Offset | 2 | 8 | 1 |
+| First quote | 4 | 3 | 4 |
+| Conservative | 4 | 0 | 7 |
+
+The conservative policy refused all four fixtures without a justified unique target, but also missed three surviving targets: changed context, a same-length quote edit and added whitespace inside the quote. Its equal correct count to first-match is not a claim of equal real-world accuracy; these selected edits describe different failure modes. The unresolved count is part of the result.
 
 Research motivation: [Phelps and Wilensky, Robust Intra-document Locations, WWW2000](https://www.ra.ethz.ch/cdstore/www9/312/312.html). The product implements bounded quote/context descriptors and explicit uncertainty, not the paper's complete UID/tree-walk/Multivalent machinery.
