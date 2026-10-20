@@ -156,24 +156,38 @@ def main():
         result["error"] = str(error)
         raise
     finally:
-        fixture_path.write_bytes(original_fixture)
-        cleanup = {"originalOpmlRestored": fixture_path.read_bytes() == original_fixture, "evidenceRetained": run.exists()}
+        cleanup = {"originalOpmlRestored": False, "simulatorStopped": simulator is None,
+                   "fixtureStopped": server is None, "evidenceRetained": run.exists()}
+        cleanup_errors = []
+        try:
+            fixture_path.write_bytes(original_fixture)
+            cleanup["originalOpmlRestored"] = fixture_path.read_bytes() == original_fixture
+        except OSError as error:
+            cleanup_errors.append("OPML restoration: " + str(error))
         try:
             if simulator:
                 command(["xcrun", "simctl", "shutdown", simulator], "cleanup.log", timeout=60)
                 devices = json.loads(output(["xcrun", "simctl", "list", "devices", "--json"]))
                 owned = next(device for group in devices["devices"].values() for device in group if device["udid"] == simulator)
                 cleanup["simulatorStopped"] = owned["state"] == "Shutdown"
+        except Exception as error:
+            cleanup_errors.append("Simulator shutdown: " + str(error))
         finally:
-            if server:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=5)
-                cleanup["fixtureStopped"] = not thread.is_alive()
+            try:
+                if server:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+                    cleanup["fixtureStopped"] = not thread.is_alive()
+            except Exception as error:
+                cleanup_errors.append("Fixture shutdown: " + str(error))
             result["cleanup"] = cleanup
+            result["cleanupErrors"] = cleanup_errors
             (run / "fixture-requests.json").write_text(json.dumps(requests, indent=2), encoding="utf-8")
             (run / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print("EVIDENCE " + str(run / "result.json"), flush=True)
+        if cleanup_errors or not all(cleanup.values()):
+            raise RuntimeError("Cleanup did not complete. Inspect result.json and cleanup.log.")
 
 
 if __name__ == "__main__":

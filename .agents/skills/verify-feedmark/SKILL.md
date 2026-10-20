@@ -5,7 +5,7 @@ description: Build and drive the real iOS reader on an isolated hosted simulator
 
 # Verify Feedmark
 
-Status: draft. No local Xcode or iOS simulator is installed on the Windows workspace. A native build alone is not proof of the reading workflow.
+Baseline proven on hosted run [39508929461](https://github.com/STEVVVU/feedmark-ios/actions/runs/39508929461), source `d5f728b92`. The unsigned app built, five existing iOS tests passed, the warning gate passed, and the real native reading flow passed. The downloaded article screenshot was inspected; RSS requests and all four cleanup flags were checked after shutdown. No local Xcode or iOS simulator is installed on the Windows workspace. Newly added annotation paths require their own proof.
 
 ## Launch
 
