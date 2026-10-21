@@ -18,7 +18,7 @@ import RSParser
 	private var feedNameCache = [String: String]()
 	private var titleCache = [TitleCacheKey: String]()
 	private var attributedTitleCache = [String: NSAttributedString]()
-	private var summaryCache = [ArticleCacheKey: String]()
+	private var summaryCache = [ArticleCacheKey: SummaryCacheEntry]()
 
 	private let dateFormatter: DateFormatter = {
 		let formatter = DateFormatter()
@@ -125,8 +125,8 @@ import RSParser
 		}
 
 		let key = ArticleCacheKey(articleID: article.articleID, accountID: article.accountID)
-		if let cachedBody = summaryCache[key] {
-			return cachedBody
+		if let cachedEntry = summaryCache[key], cachedEntry.body == body {
+			return cachedEntry.summary
 		}
 
 		// Strip first, then decode. Strip bounds the input to decode
@@ -139,7 +139,7 @@ import RSParser
 		if s == "Comments" { // Hacker News.
 			s = ""
 		}
-		summaryCache[key] = s
+		summaryCache[key] = SummaryCacheEntry(body: body, summary: s)
 		return s
 	}
 
@@ -279,6 +279,11 @@ private extension ArticleStringFormatter {
 	struct ArticleCacheKey: Hashable {
 		let articleID: String
 		let accountID: String
+	}
+
+	struct SummaryCacheEntry {
+		let body: String
+		let summary: String
 	}
 
 	// (raw title, forHTML) key. Hit path skips `sanitizedTitle`.

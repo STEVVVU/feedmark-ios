@@ -1,15 +1,20 @@
-name: Feedmark native checks
+name: Feedmark checks
 
 on:
   push:
     branches: [feedmark]
   workflow_dispatch:
+    inputs:
+      drive_native:
+        description: Drive the optional native UI acceptance workflow
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  native-baseline:
+  build-and-test:
     runs-on: macos-26
     timeout-minutes: 45
     env:
@@ -36,8 +41,13 @@ jobs:
           unzip -q "$lint_dir/portable_swiftlint.zip" -d "$lint_dir"
           "$lint_dir/swiftlint" version
           "$lint_dir/swiftlint" lint --strict iOS/Notebook Tests/NetNewsWire-iOSTests/NotebookTests.swift \
+            Tests/NetNewsWire-iOSTests/ArticleStringFormatterSummaryCacheTests.swift Shared/Extensions/ArticleStringFormatter.swift \
             iOS/Article/ArticleViewController.swift iOS/Article/WebViewController.swift iOS/MainTimeline/MainTimelineViewController.swift
+      - name: Build and run the iOS test plan
+        if: github.event_name != 'workflow_dispatch' || !inputs.drive_native
+        run: python tools/verify-feedmark.py ci-${{ github.run_id }} --build-only
       - name: Build and drive the real native reader
+        if: github.event_name == 'workflow_dispatch' && inputs.drive_native
         run: python tools/verify-feedmark.py ci-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         if: always()

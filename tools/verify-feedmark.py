@@ -27,6 +27,7 @@ FIXTURE_CACHE_CONTROL = "max-age=1"
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("run_name")
+    parser.add_argument("--build-only", action="store_true", help="Build and run the iOS test plan without driving native UI.")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true" or platform.system() != "Darwin":
         parser.error("Use the dedicated macOS hosted workflow. No local native UI automation is configured.")
@@ -34,7 +35,7 @@ def main():
         parser.error("Use a short alphanumeric run name.")
     run = ROOT / ".audit" / "verification" / args.run_name
     run.mkdir(parents=True, exist_ok=False)
-    result = {"run": args.run_name, "actions": [], "nativeAcceptance": False}
+    result = {"run": args.run_name, "actions": [], "nativeAcceptance": False, "requestedNative": not args.build_only}
     env = dict(os.environ, PROJECT_DIR=str(ROOT), MAESTRO_CLI_NO_ANALYTICS="true",
                MAESTRO_DISABLE_UPDATE_CHECK="true", MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED="true")
     for key in ("MERCURY_CLIENT_ID", "MERCURY_CLIENT_SECRET", "FEEDLY_CLIENT_ID", "FEEDLY_CLIENT_SECRET",
@@ -132,8 +133,11 @@ def main():
         app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
         with (app / "Info.plist").open("rb") as info_file:
             bundle_id = plistlib.load(info_file)["CFBundleIdentifier"]
-        command(["xcrun", "simctl", "install", simulator, app], "simulator.log", timeout=60)
         result["actions"].append({"action": "build-and-test", "bundleId": bundle_id, "signing": "disabled"})
+        result["buildAccepted"] = True
+        if args.build_only:
+            return
+        command(["xcrun", "simctl", "install", simulator, app], "simulator.log", timeout=60)
 
         archive_path = run / "maestro.zip"
         urllib.request.urlretrieve("https://github.com/mobile-dev-inc/Maestro/releases/download/" + MAESTRO_VERSION + "/maestro.zip", archive_path)
