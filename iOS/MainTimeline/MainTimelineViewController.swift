@@ -871,7 +871,6 @@ private extension MainTimelineViewController {
 
 		collectionView?.refreshControl = UIRefreshControl()
 		collectionView?.refreshControl?.addTarget(self, action: #selector(refreshAccounts(_:)), for: .valueChanged)
-		collectionView?.alwaysBounceVertical = true
 		collectionView?.contentInsetAdjustmentBehavior = .automatic
 
 		let layout = UICollectionViewCompositionalLayout { _, layoutEnvironment in

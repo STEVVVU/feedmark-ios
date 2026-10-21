@@ -21,6 +21,7 @@ from xml.sax.saxutils import escape as xml_escape
 ROOT = Path(__file__).resolve().parents[1]
 MAESTRO_VERSION = "cli-2.11.0"
 MAESTRO_SHA256 = "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a"
+FIXTURE_CACHE_CONTROL = "max-age=1"
 
 
 def main():
@@ -86,7 +87,8 @@ def main():
                 with fixture_lock:
                     version = fixture["version"]
                     body = "".join("<p>" + escape(paragraph) + "</p>" for paragraph in fixture["paragraphs"])
-                    requests.append({"path": self.path, "method": "GET", "version": version})
+                    requests.append({"path": self.path, "method": "GET", "version": version,
+                                     "responseCacheControl": FIXTURE_CACHE_CONTROL})
                 if self.path == "/feed.xml":
                     payload = ("<?xml version='1.0'?><rss version='2.0'><channel><title>Feedmark verification feed</title>"
                                "<link>http://127.0.0.1:{port}/</link><description>Synthetic local verification</description>"
@@ -104,7 +106,7 @@ def main():
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Cache-Control", "no-store")
+                self.send_header("Cache-Control", FIXTURE_CACHE_CONTROL)
                 self.end_headers()
                 self.wfile.write(payload)
 
