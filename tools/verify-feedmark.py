@@ -238,7 +238,9 @@ def main():
             drive("notebook-" + version,
                   "- tapOn: '^Done$'\n"
                   "- tapOn:\n    id: '^BackButton$'\n"
-                  "- swipe:\n    start: 50%, 30%\n    end: 50%, 85%\n    duration: 700\n"
+                  "- takeScreenshot: refresh-before-" + version + "\n"
+                  "- swipe:\n    from:\n      text: 'Evidence survives the network.*'\n    direction: DOWN\n    duration: 700\n"
+                  "- takeScreenshot: refresh-after-" + version + "\n"
                   + visible(marker, 60000)
                   + "- tapOn: 'Evidence survives the network.*'\n"
                   + visible(marker)
@@ -296,6 +298,11 @@ def main():
                     (run / "notebook-at-failure.json").write_bytes(notebook_file.read_bytes())
             except (OSError, subprocess.SubprocessError) as diagnostic_error:
                 result["failureNotebookDiagnosticError"] = str(diagnostic_error)
+            try:
+                command(["xcrun", "simctl", "spawn", simulator, "log", "show", "--style", "compact", "--last", "15m",
+                         "--predicate", 'process == "NetNewsWire"', "--info", "--debug"], "app-at-failure.log", timeout=30)
+            except (OSError, subprocess.SubprocessError) as diagnostic_error:
+                result["failureAppLogDiagnosticError"] = str(diagnostic_error)
         raise
     finally:
         cleanup = {"originalOpmlRestored": False, "simulatorStopped": simulator is None,
