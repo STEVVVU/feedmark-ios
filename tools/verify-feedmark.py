@@ -176,7 +176,7 @@ def main():
                                  "- scrollUntilVisible:\n    element:\n      id: notebook.note\n    direction: DOWN\n"
                                  "- tapOn:\n    id: notebook.note\n"
                                  "- inputText: 'Source context matters'\n"
-                                 "- tapOn: '^done$'\n"
+                                 "- tapOn:\n    id: '^Done$'\n"
                                  "- scrollUntilVisible:\n    element:\n      id: notebook.save\n    direction: DOWN\n"
                                  "- tapOn:\n    id: notebook.save\n"
                                  "- assertVisible: 'Note saved on this device.'\n"
@@ -233,7 +233,7 @@ def main():
                 fixture.update(version=version, paragraphs=paragraphs)
             drive("notebook-" + version,
                   "- tapOn: '^Done$'\n"
-                  "- tapOn:\n    point: 9%, 10%\n"
+                  "- tapOn:\n    id: '^BackButton$'\n"
                   "- swipe:\n    start: 50%, 30%\n    end: 50%, 85%\n    duration: 700\n"
                   + visible(marker, 60000)
                   + "- tapOn: 'Evidence survives the network.*'\n"
