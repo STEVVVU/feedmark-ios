@@ -183,7 +183,7 @@ def main():
                                  "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
                                  "- assertVisible: 'Attached to this snapshot'\n"
                                  "- takeScreenshot: notebook-saved\n", encoding="utf-8")
-        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "notebook-junit.xml",
+        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--no-reinstall-driver", "--output", run / "notebook-junit.xml",
                  "--debug-output", run / "notebook-evidence", "--test-output-dir", run / "native-artifacts", notebook_flow], "maestro.log", timeout=300)
         container = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"]).decode().strip())
         notebook_file = container / "Library/Application Support/FeedmarkNotebook/notes.json"
@@ -202,7 +202,7 @@ def main():
                                 "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
                                 "- assertVisible: 'Attached to this snapshot'\n"
                                 "- takeScreenshot: notebook-reopened\n", encoding="utf-8")
-        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "reopen-junit.xml",
+        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--no-reinstall-driver", "--output", run / "reopen-junit.xml",
                  "--debug-output", run / "reopen-evidence", "--test-output-dir", run / "native-artifacts", restore_flow], "maestro.log", timeout=300)
         assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
         (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
@@ -211,7 +211,7 @@ def main():
         def drive(name, steps):
             path = run / (name + ".yaml")
             path.write_text("appId: " + bundle_id + "\n---\n" + steps, encoding="utf-8")
-            command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / (name + "-junit.xml"),
+            command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--no-reinstall-driver", "--output", run / (name + "-junit.xml"),
                      "--debug-output", run / (name + "-evidence"), "--test-output-dir", run / "native-artifacts", path],
                     "maestro.log", timeout=300)
 

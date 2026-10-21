@@ -23,11 +23,11 @@ Maestro CLI 2.11.0 is a test-only tool, downloaded from its official GitHub rele
 
 The generated baseline flow selects `Feedmark verification feed`, opens `Evidence survives the network` and verifies the synthetic article text. The driver also verifies that the actual app fetched `/feed.xml`. The original baseline retained an explicit article PNG; subsequent runs set Maestro's actual `--test-output-dir` so the requested sidebar/timeline/notebook PNGs are also uploaded. See [the feature map](features/README.md). Existing iOS unit tests are additional evidence, not a substitute for this native path.
 
-The notebook flow uses the real article toolbar, captures its whole text, saves a user-entered note and checks its actual sandbox JSON. A separate terminate/relaunch flow checks the visible note and exact retained bytes. These new feature paths are pending hosted acceptance; do not infer them from the older reader baseline.
+The notebook flow uses the real article toolbar, captures its whole text, saves a user-entered note and checks its actual sandbox JSON. A separate terminate/relaunch flow checks the visible note and exact retained bytes. Save/relaunch passed on39520091249 with inspected native PNGs, exact unchanged archive bytes and all cleanup flags true. The expanded mutation flow failed before a new RSS fetch; content-change/repair/removal acceptance is still pending. The one-article timeline regression remains in the driver. Subsequent flows reuse the same pinned driver installation on the same owned simulator via the actual `test --no-reinstall-driver` option; the baseline still installs it normally.
 
 ## Evidence
 
-Keep `.audit/verification/<run>/result.json`, HTTP request records, native PNGs, Maestro artifacts/JUnit, notebook JSON before/after restart and Xcode result bundle/logs. The hosted workflow uploads them for inspection. Download and view actual screenshots before accepting native rendering. The older baseline does not verify the newly implemented notebook. No collaboration feature is implemented.
+Keep `.audit/verification/<run>/result.json`, HTTP request records, native PNGs, Maestro artifacts/JUnit, notebook JSON before/after restart and Xcode result bundle/logs. The hosted workflow uploads them for inspection. Download and view actual screenshots before accepting native rendering. The older baseline does not verify the notebook. Run39520091249 provides actual save/relaunch proof but does not clear its failed mutation step. No collaboration feature is implemented.
 
 ## Cleanup
 

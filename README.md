@@ -13,6 +13,10 @@ The upstream reader supplies feeds, article rendering, accounts and SQLite stora
 
 The sheet freezes the rendered text it opened with. It never silently includes later background changes. The resolver first checks the original snapshot digest and position. After a change it checks exact quotation/context evidence; multiple supported matches remain ambiguous. Short or changed-context matches can remain unresolved. This favors a visible unresolved note over an unjustified attachment, but does not guarantee semantic identity.
 
+<img src="docs/feedmark/notebook.png" width="390" alt="Actual iOS notebook after app relaunch, showing the saved note, original quote and attachment status">
+
+Actual simulator capture after saving a note and relaunching the app.
+
 ## Run and verify
 
 The app requires macOS, Xcode 26.3 and an installed iOS simulator. It runs without a news-service account using NetNewsWire's local feeds. This repository's work is scoped to iOS; the upstream macOS app is retained.
@@ -23,11 +27,13 @@ For local source work, use the `NetNewsWire-iOS` scheme and see the [verificatio
 
 ## Evidence and limits
 
-The [native SDK mechanism check](https://github.com/STEVVVU/feedmark-ios/actions/runs/39517061156) passed all 20 iOS tests, pinned SwiftLint and the compiler warning gate. It includes Unicode selection regressions, an exhaustive small Unicode-subrange invariant and the declared attachment comparison. Its actual RSS-fetch/native-reader flow also passed. Notebook capture/save/restart, content changes and explicit repair/removal are implemented and currently undergoing simulator acceptance; they are not yet verified end to end.
+The [native feature check](https://github.com/STEVVVU/feedmark-ios/actions/runs/39520091249) passed all 20 iOS tests, pinned SwiftLint and the compiler warning gate. The actual reader, whole-article capture, note input/save and terminate/relaunch flows passed. The sandbox archive retained the exact note and original quote bytes after relaunch; the native screenshots were inspected. All four cleanup checks passed.
+
+The expanded content-change flow then exposed a short-list refresh issue: its pull gesture made no new RSS request. The current correction enables vertical bounce for short timelines and retains that one-article regression. Native content-change, repair and removal acceptance remains pending; the overall workflow is not yet green.
 
 Notes use an app-sandbox JSON archive written atomically by one main-actor store. No sync, encryption, backup exclusion or cross-process writer is claimed. Bounds are 200 notes, 20 repairs per note, 100,000 UTF-16 units of article text and 4,000 units per captured quote. A failed or corrupt archive read does not reset the existing file. A changed article can deliberately leave a quote unresolved.
 
-Native partial-selection gestures, content-change recovery, repair/removal and broader device/accessibility coverage still need real-product evidence. No real-user study, production operation, full dependency-security audit or research-quality recovery rate is claimed.
+Native partial-selection gestures, the corrected content-change path, repair/removal and broader device/accessibility coverage still need real-product evidence. No real-user study, production operation, full dependency-security audit or research-quality recovery rate is claimed.
 
 ## Research and course connection
 

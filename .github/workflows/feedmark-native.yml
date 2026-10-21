@@ -36,7 +36,7 @@ jobs:
           unzip -q "$lint_dir/portable_swiftlint.zip" -d "$lint_dir"
           "$lint_dir/swiftlint" version
           "$lint_dir/swiftlint" lint --strict iOS/Notebook Tests/NetNewsWire-iOSTests/NotebookTests.swift \
-            iOS/Article/ArticleViewController.swift iOS/Article/WebViewController.swift
+            iOS/Article/ArticleViewController.swift iOS/Article/WebViewController.swift iOS/MainTimeline/MainTimelineViewController.swift
       - name: Build and drive the real native reader
         run: python tools/verify-feedmark.py ci-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
