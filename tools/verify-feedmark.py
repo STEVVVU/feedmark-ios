@@ -40,6 +40,7 @@ def main():
                 "INOREADER_APP_ID", "INOREADER_APP_KEY"):
         env.pop(key, None)
     simulator = None
+    bundle_id = None
     server = None
     thread = None
     fixture_path = ROOT / "Shared/Importers/DefaultFeeds.opml"
@@ -177,8 +178,11 @@ def main():
                                  "- tapOn:\n    id: notebook.note\n"
                                  "- inputText: 'Source context matters'\n"
                                  "- tapOn:\n    id: '^Done$'\n"
+                                 "- waitForAnimationToEnd\n"
                                  "- scrollUntilVisible:\n    element:\n      id: notebook.save\n    direction: DOWN\n"
+                                 "- takeScreenshot: notebook-before-save\n"
                                  "- tapOn:\n    id: notebook.save\n"
+                                 "- takeScreenshot: notebook-after-save\n"
                                  "- assertVisible: 'Note saved on this device.'\n"
                                  "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
                                  "- assertVisible: 'Attached to this snapshot'\n"
@@ -283,6 +287,15 @@ def main():
         result["nativeAcceptance"] = True
     except BaseException as error:
         result["error"] = str(error)
+        if simulator and bundle_id:
+            try:
+                container = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"]).decode().strip())
+                notebook_file = container / "Library/Application Support/FeedmarkNotebook/notes.json"
+                result["failureNotebookPresent"] = notebook_file.is_file()
+                if notebook_file.is_file():
+                    (run / "notebook-at-failure.json").write_bytes(notebook_file.read_bytes())
+            except (OSError, subprocess.SubprocessError) as diagnostic_error:
+                result["failureNotebookDiagnosticError"] = str(diagnostic_error)
         raise
     finally:
         cleanup = {"originalOpmlRestored": False, "simulatorStopped": simulator is None,
