@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A15809000000000000000003 /* Articles in Frameworks */ = {isa = PBXBuildFile; productRef = A15809000000000000000004 /* Articles */; };
 		FA1100000000000000000001 /* NotebookTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1100000000000000000002 /* NotebookTests.swift */; };
 		A15809000000000000000001 /* ArticleStringFormatterSummaryCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15809000000000000000002 /* ArticleStringFormatterSummaryCacheTests.swift */; };
 		17192ADA2567B3D500AAEACA /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 17192AD92567B3D500AAEACA /* Sparkle */; };
@@ -502,6 +503,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A15809000000000000000003 /* Articles in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -727,6 +729,9 @@
 				518B2ED82351B3DD00400001 /* PBXTargetDependency */,
 			);
 			name = "NetNewsWire-iOSTests";
+			packageProductDependencies = (
+				A15809000000000000000004 /* Articles */,
+			);
 			productName = "NetNewsWire-iOSTests";
 			productReference = 518B2ED22351B3DD00400001 /* NetNewsWire-iOSTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -1502,6 +1507,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A15809000000000000000004 /* Articles */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Articles;
+		};
 		17192AD92567B3D500AAEACA /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 17192AD82567B3D500AAEACA /* XCRemoteSwiftPackageReference "Sparkle" */;
