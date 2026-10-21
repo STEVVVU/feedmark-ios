@@ -176,7 +176,7 @@ def main():
                                  "- scrollUntilVisible:\n    element:\n      id: notebook.note\n    direction: DOWN\n"
                                  "- tapOn:\n    id: notebook.note\n"
                                  "- inputText: 'Source context matters'\n"
-                                 "- hideKeyboard\n"
+                                 "- tapOn: '^done$'\n"
                                  "- scrollUntilVisible:\n    element:\n      id: notebook.save\n    direction: DOWN\n"
                                  "- tapOn:\n    id: notebook.save\n"
                                  "- assertVisible: 'Note saved on this device.'\n"
@@ -207,6 +207,79 @@ def main():
         assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
         (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
         result["actions"].append({"action": "native-note-restart", "exactFileRetained": True})
+
+        def drive(name, steps):
+            path = run / (name + ".yaml")
+            path.write_text("appId: " + bundle_id + "\n---\n" + steps, encoding="utf-8")
+            command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / (name + "-junit.xml"),
+                     "--debug-output", run / (name + "-evidence"), "--test-output-dir", run / "native-artifacts", path],
+                    "maestro.log", timeout=300)
+
+        def visible(text, timeout=30000):
+            return "- extendedWaitUntil:\n    visible: " + json.dumps("(?s).*" + re.escape(text) + ".*") + f"\n    timeout: {timeout}\n"
+
+        def scroll_to(text, direction="DOWN"):
+            return "- scrollUntilVisible:\n    element:\n      text: " + json.dumps(re.escape(text)) + "\n    direction: " + direction + "\n"
+
+        changes = [
+            ("prepend", ["New introduction.", original_article], "New introduction.", "Reattached to matching text"),
+            ("duplicate", ["Duplicate check.", original_article, original_article], "Duplicate check.",
+             "Ambiguous attachment. Original quote retained."),
+            ("deleted", ["Replacement passage selected explicitly."], "Replacement passage",
+             "Passage missing or context changed. Original quote retained."),
+        ]
+        for version, paragraphs, marker, status in changes:
+            with fixture_lock:
+                fixture.update(version=version, paragraphs=paragraphs)
+            drive("notebook-" + version,
+                  "- tapOn: '^Done$'\n"
+                  "- tapOn:\n    point: 9%, 10%\n"
+                  "- swipe:\n    start: 50%, 30%\n    end: 50%, 85%\n    duration: 700\n"
+                  + visible(marker, 60000)
+                  + "- tapOn: 'Evidence survives the network.*'\n"
+                  + visible(marker)
+                  + "- tapOn: 'Reading notebook'\n"
+                  + scroll_to(status)
+                  + "- assertVisible: " + json.dumps(re.escape("Original quote: " + original_article)) + "\n"
+                  + "- takeScreenshot: notebook-" + version + "\n")
+            assert any(item["path"] == "/feed.xml" and item["version"] == version for item in requests), "No actual RSS fetch for " + version
+            assert notebook_file.read_bytes() == saved_bytes, "Attachment inspection changed the original note."
+            (run / ("notebook-" + version + ".json")).write_bytes(notebook_file.read_bytes())
+            result["actions"].append({"action": "native-refresh-attachment", "version": version,
+                                      "visibleStatus": status, "originalArchiveUnchanged": True})
+
+        note_id = saved["notes"][0]["id"]
+        repair_id = "notebook.repair." + note_id
+        drive("notebook-repair",
+              "- scrollUntilVisible:\n    element:\n      id: notebook.captureWhole\n    direction: UP\n"
+              "- tapOn:\n    id: notebook.captureWhole\n"
+              "- scrollUntilVisible:\n    element:\n      id: " + repair_id + "\n    direction: DOWN\n"
+              "- tapOn:\n    id: " + repair_id + "\n"
+              + scroll_to("Repairs: 1")
+              + "- assertVisible: 'Attached to this snapshot'\n"
+              "- takeScreenshot: notebook-repaired\n")
+        repaired_bytes = notebook_file.read_bytes()
+        repaired = json.loads(repaired_bytes)["notes"][0]
+        original_note = saved["notes"][0]
+        assert repaired["id"] == note_id and repaired["key"] == original_note["key"]
+        assert repaired["originalText"] == original_note["originalText"] and repaired["note"] == original_note["note"]
+        assert len(repaired["anchors"]) == 2 and repaired["anchors"][0] == original_note["anchors"][0]
+        assert repaired["anchors"][-1]["quote"] == "Replacement passage selected explicitly."
+        (run / "notebook-repaired.json").write_bytes(repaired_bytes)
+        result["actions"].append({"action": "native-repair-note", "priorAnchorRetained": True, "repairs": 1})
+        remove_id = "notebook.remove." + note_id
+        drive("notebook-remove",
+              "- scrollUntilVisible:\n    element:\n      id: " + remove_id + "\n    direction: DOWN\n"
+              "- tapOn:\n    id: " + remove_id + "\n"
+              "- assertVisible: " + json.dumps(re.escape("Remove this note?")) + "\n"
+              "- tapOn: '^Remove$'\n"
+              + scroll_to("No notes for this article yet.")
+              + "- takeScreenshot: notebook-removed\n")
+        removed_bytes = notebook_file.read_bytes()
+        removed = json.loads(removed_bytes)
+        assert removed["version"] == 1 and removed["notes"] == []
+        (run / "notebook-removed.json").write_bytes(removed_bytes)
+        result["actions"].append({"action": "native-remove-note", "persistedNotes": 0})
         result["nativeAcceptance"] = True
     except BaseException as error:
         result["error"] = str(error)
