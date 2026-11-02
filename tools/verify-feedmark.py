@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import stat
 import subprocess
 import threading
 import time
@@ -50,21 +51,61 @@ def required_evidence(native):
     return files
 
 
-def missing_evidence(run, native):
+def missing_evidence(run, native, native_only=False):
     def valid_png(path):
         with path.open("rb") as image:
             return image.read(len(PNG_SIGNATURE)) == PNG_SIGNATURE
 
     missing = []
-    for pattern in required_evidence(native):
+    patterns = required_evidence(native)
+    if native_only:
+        patterns = [pattern for pattern in patterns if pattern not in ("build.log", "warnings.log")]
+        patterns += ["build-manifest.json", "build-result.json"]
+    for pattern in patterns:
         matches = [path for path in run.glob(pattern) if path.is_file() and path.stat().st_size > 0]
         if pattern.endswith(".png"):
             matches = [path for path in matches if valid_png(path)]
         if not matches:
             missing.append(pattern)
-    if not any(path.is_file() for path in (run / "baseline.xcresult").rglob("*")):
+    if not native_only and not any(path.is_file() for path in (run / "baseline.xcresult").rglob("*")):
         missing.append("baseline.xcresult/**")
     return missing
+
+
+def validate_boundary(manifest, build_result, run_id, producer_attempt, current_attempt, source, archive):
+    if not producer_attempt.isdecimal() or not current_attempt.isdecimal() or int(producer_attempt) < 1 or int(producer_attempt) > int(current_attempt):
+        raise ValueError("Invalid producing workflow attempt.")
+    if manifest.get("schemaVersion") != 1 or not run_id or not source or manifest.get("runId") != run_id or manifest.get("runAttempt") != producer_attempt or manifest.get("source") != source:
+        raise ValueError("Build artifact run or source does not match this workflow.")
+    if build_result.get("source") != source or build_result.get("runId") != run_id or build_result.get("runAttempt") != producer_attempt:
+        raise ValueError("Build receipt run or source does not match this workflow.")
+    executable = manifest.get("executable")
+    if not isinstance(executable, str) or not executable or executable in (".", "..") or "/" in executable or "\\" in executable:
+        raise ValueError("Build artifact has an invalid executable name.")
+    port = manifest.get("fixturePort")
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError("Build artifact has an invalid fixture port.")
+    if build_result.get("buildAccepted") is not True or build_result.get("missingEvidence") != [] or build_result.get("cleanupErrors") != []:
+        raise ValueError("Build receipt does not prove a successful build and cleanup.")
+    if any(build_result.get("cleanup", {}).get(flag) is not True for flag in CLEANUP_FLAGS):
+        raise ValueError("Build receipt does not prove successful cleanup.")
+    if archive.is_symlink() or not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != manifest.get("archiveSha256"):
+        raise ValueError("Build archive hash does not match manifest.")
+    with zipfile.ZipFile(archive) as bundle:
+        names = set()
+        for entry in bundle.infolist():
+            name = entry.filename.rstrip("/")
+            parts = name.split("/")
+            if not name or parts[0] != "NetNewsWire.app" or any(part in ("", ".", "..") for part in parts) or "\\" in name:
+                raise ValueError("Unsafe app archive path.")
+            name_key = name.casefold()
+            if name_key in names:
+                raise ValueError("Duplicate app archive path.")
+            names.add(name_key)
+            kind = (entry.external_attr >> 16) & 0o170000
+            if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
+                raise ValueError("Unsafe app archive entry type.")
+    return port
 
 
 def finalize_result(result, cleanup, cleanup_errors, native_checks_passed):
@@ -77,6 +118,26 @@ def finalize_result(result, cleanup, cleanup_errors, native_checks_passed):
 
 def simulators_stopped(owned_simulators, states):
     return all(states.get(owned) == "Shutdown" for owned in owned_simulators)
+
+
+def fixture_opml(port):
+    return ("<?xml version='1.0'?><opml version='2.0'><head><title>Verification</title></head><body>"
+            f"<outline text='Feedmark verification feed' title='Feedmark verification feed' type='rss' "
+            f"xmlUrl='http://127.0.0.1:{port}/feed.xml'/></body></opml>").encode()
+
+
+def validate_staged_app(app, manifest, port):
+    with (app / "Info.plist").open("rb") as info_file:
+        info = plistlib.load(info_file)
+    if info["CFBundleIdentifier"] != manifest["bundleId"] or info["CFBundleExecutable"] != manifest["executable"] or hashlib.sha256((app / info["CFBundleExecutable"]).read_bytes()).hexdigest() != manifest["binarySha256"]:
+        raise ValueError("Extracted app identity does not match manifest.")
+    binary_mode = stat.S_IMODE((app / info["CFBundleExecutable"]).stat().st_mode)
+    if binary_mode != manifest.get("binaryMode") or binary_mode & 0o111 == 0:
+        raise ValueError("Extracted app executable mode does not match the tested build.")
+    opml = (app / "DefaultFeeds.opml").read_bytes()
+    if opml != fixture_opml(port) or hashlib.sha256(opml).hexdigest() != manifest.get("fixtureSha256"):
+        raise ValueError("Extracted app fixture does not match the manifest port and hash.")
+    return info["CFBundleIdentifier"]
 
 
 def verify_installed_app(built_app, installed_app, receipt_path):
@@ -99,15 +160,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("run_name")
     parser.add_argument("--build-only", action="store_true", help="Build and run the iOS test plan without driving native UI.")
+    parser.add_argument("--stage-build", action="store_true", help="Archive the tested app for the native job.")
+    parser.add_argument("--native-from", type=Path, help="Drive an app staged by the build job of this workflow run.")
+    parser.add_argument("--producer-attempt", help="Workflow attempt that produced the staged app.")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true" or platform.system() != "Darwin":
         parser.error("Use the dedicated macOS hosted workflow. No local native UI automation is configured.")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,60}", args.run_name):
         parser.error("Use a short alphanumeric run name.")
+    if args.native_from and (args.build_only or args.stage_build) or args.stage_build and not args.build_only:
+        parser.error("Use --stage-build with --build-only, or --native-from alone.")
+    if bool(args.native_from) != bool(args.producer_attempt):
+        parser.error("Use --native-from with --producer-attempt.")
     run = ROOT / ".audit" / "verification" / args.run_name
     run.mkdir(parents=True, exist_ok=False)
     result = {"run": args.run_name, "actions": [], "nativeAcceptance": False, "requestedNative": not args.build_only}
     native_checks_passed = False
+    stage_dir = None
     env = dict(os.environ, PROJECT_DIR=str(ROOT), MAESTRO_CLI_NO_ANALYTICS="true",
                MAESTRO_DISABLE_UPDATE_CHECK="true", MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED="true")
     for key in ("MERCURY_CLIENT_ID", "MERCURY_CLIENT_SECRET", "FEEDLY_CLIENT_ID", "FEEDLY_CLIENT_SECRET",
@@ -148,8 +217,34 @@ def main():
                                       "elapsedSeconds": round(time.monotonic() - started, 3), "succeeded": succeeded})
 
     try:
+        command(["uname", "-a"], "doctor.log", timeout=15)
+        command(["sysctl", "hw.logicalcpu", "hw.memsize"], "doctor.log", timeout=15)
         command(["xcodebuild", "-version"], "doctor.log", timeout=30)
         command(["java", "-version"], "doctor.log", timeout=15)
+        source = output(["git", "rev-parse", "HEAD"]).decode().strip()
+        run_id = os.environ.get("GITHUB_RUN_ID", "")
+        run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+        if (args.stage_build or args.native_from) and (not run_id or not run_attempt or source != os.environ.get("GITHUB_SHA")):
+            raise ValueError("Staged runs require matching GitHub run and checkout identity.")
+        result.update({"source": source, "runId": run_id, "runAttempt": run_attempt})
+        manifest = None
+        fixture_port = 0
+        if args.native_from:
+            if any((args.native_from / name).is_symlink() or not (args.native_from / name).is_file()
+                   for name in ("manifest.json", "build-result.json", "app.zip")):
+                raise ValueError("Build artifact files must be regular files.")
+            manifest = json.loads((args.native_from / "manifest.json").read_text(encoding="utf-8"))
+            build_receipt = json.loads((args.native_from / "build-result.json").read_text(encoding="utf-8"))
+            archive = args.native_from / "app.zip"
+            fixture_port = validate_boundary(manifest, build_receipt, run_id, args.producer_attempt, run_attempt, source, archive)
+            (run / "build-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            (run / "build-result.json").write_text(json.dumps(build_receipt, indent=2), encoding="utf-8")
+            command(["ditto", "-x", "-k", archive, run / "staged-app"], "simulator.log", timeout=300)
+            app = run / "staged-app/NetNewsWire.app"
+            bundle_id = validate_staged_app(app, manifest, fixture_port)
+            result["buildAccepted"] = True
+            result["actions"].append({"action": "verify-staged-build", "source": source, "runId": run_id,
+                                      "binarySha256": manifest["binarySha256"], "fixturePort": fixture_port})
         inventory_started = time.monotonic()
         try:
             command(["xcrun", "simctl", "list", "--json"], "simulator-inventory.log", timeout=120)
@@ -167,8 +262,12 @@ def main():
         owned_simulators.append(simulator)
         active_simulators.append(simulator)
         result["actions"].append({"action": "doctor", "simulator": simulator, "runtime": runtime["version"]})
-        command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60)
-        command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300)
+        if args.native_from:
+            timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
+            timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
+        else:
+            command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60)
+            command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300)
 
         class FixtureHandler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -201,38 +300,57 @@ def main():
             def log_message(self, *_):
                 pass
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", fixture_port), FixtureHandler)
+        except OSError as error:
+            raise OSError(f"Cannot bind the required fixture port {fixture_port}: {error}") from error
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         port = server.server_port
-        fixture_path.write_text("<?xml version='1.0'?><opml version='2.0'><head><title>Verification</title></head><body>"
-                                f"<outline text='Feedmark verification feed' title='Feedmark verification feed' type='rss' "
-                                f"xmlUrl='http://127.0.0.1:{port}/feed.xml'/></body></opml>", encoding="utf-8")
+        if not args.native_from:
+            fixture_path.write_bytes(fixture_opml(port))
         result["actions"].append({"action": "fixture", "loopbackPort": port, "originalOpmlSha256": hashlib.sha256(original_fixture).hexdigest()})
-        command(["bash", "buildscripts/updateSecrets.sh"], "build.log", timeout=60)
-        command(["xcodebuild", "-project", "NetNewsWire.xcodeproj", "-scheme", "NetNewsWire-iOS",
+        if not args.native_from:
+            command(["bash", "buildscripts/updateSecrets.sh"], "build.log", timeout=60)
+            command(["xcodebuild", "-project", "NetNewsWire.xcodeproj", "-scheme", "NetNewsWire-iOS",
                  "-testPlan", "NetNewsWire-iOS", "-xcconfig", ".github/ios-ci-no-signing.xcconfig",
                  "-destination", "platform=iOS Simulator,id=" + simulator,
                  "-parallel-testing-enabled", "NO",
                  "-derivedDataPath", run / "DerivedData", "-resultBundlePath", run / "baseline.xcresult",
                  "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS", "test"], "build.log")
-        command(["bash", "buildscripts/fail_on_warnings.sh", run / "build.log"], "warnings.log", timeout=30)
-        app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
-        with (app / "Info.plist").open("rb") as info_file:
-            bundle_id = plistlib.load(info_file)["CFBundleIdentifier"]
-        result["actions"].append({"action": "build-and-test", "bundleId": bundle_id, "signing": "disabled"})
-        result["buildAccepted"] = True
+            command(["bash", "buildscripts/fail_on_warnings.sh", run / "build.log"], "warnings.log", timeout=30)
+            app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
+            with (app / "Info.plist").open("rb") as info_file:
+                info = plistlib.load(info_file)
+            bundle_id = info["CFBundleIdentifier"]
+            result["actions"].append({"action": "build-and-test", "bundleId": bundle_id, "signing": "disabled"})
+            result["buildAccepted"] = True
+            if args.stage_build:
+                if (app / "DefaultFeeds.opml").read_bytes() != fixture_opml(port):
+                    raise ValueError("Built app fixture does not match its server port.")
+                stage_dir = run / "stage"
+                stage_dir.mkdir()
+                archive = stage_dir / "app.zip"
+                command(["ditto", "-c", "-k", "--norsrc", "--keepParent", app, archive], "build.log", timeout=300)
+                manifest = {"schemaVersion": 1, "runId": run_id, "runAttempt": run_attempt, "source": source, "fixturePort": port,
+                            "bundleId": bundle_id, "executable": info["CFBundleExecutable"],
+                            "fixtureSha256": hashlib.sha256(fixture_opml(port)).hexdigest(),
+                            "binarySha256": hashlib.sha256((app / info["CFBundleExecutable"]).read_bytes()).hexdigest(),
+                            "binaryMode": stat.S_IMODE((app / info["CFBundleExecutable"]).stat().st_mode),
+                            "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+                (stage_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         if args.build_only:
             return
-        timed("shutdown-test-simulator", lambda: command(["xcrun", "simctl", "shutdown", simulator], "simulator.log", timeout=60))
-        active_simulators.remove(simulator)
-        simulator = output(["xcrun", "simctl", "create", "Feedmark-native-" + args.run_name,
+        if not args.native_from:
+            timed("shutdown-test-simulator", lambda: command(["xcrun", "simctl", "shutdown", simulator], "simulator.log", timeout=60))
+            active_simulators.remove(simulator)
+            simulator = output(["xcrun", "simctl", "create", "Feedmark-native-" + args.run_name,
                             device_type["identifier"], runtime["identifier"]]).decode().strip()
-        owned_simulators.append(simulator)
-        active_simulators.append(simulator)
-        result["actions"].append({"action": "create-native-simulator", "simulator": simulator, "runtime": runtime["version"]})
-        timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
-        timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
+            owned_simulators.append(simulator)
+            active_simulators.append(simulator)
+            result["actions"].append({"action": "create-native-simulator", "simulator": simulator, "runtime": runtime["version"]})
+            timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
+            timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
         timed("install-native-app", lambda: command(["xcrun", "simctl", "install", simulator, app], "simulator.log", timeout=60))
         installed_app = Path(timed("locate-native-app", lambda: output(
             ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "app"])).decode().strip())
@@ -443,10 +561,12 @@ def main():
             except Exception as error:
                 cleanup_errors.append("Fixture shutdown: " + str(error))
             (run / "fixture-requests.json").write_text(json.dumps(requests, indent=2), encoding="utf-8")
-            result["missingEvidence"] = missing_evidence(run, not args.build_only)
+            result["missingEvidence"] = missing_evidence(run, not args.build_only, bool(args.native_from))
             cleanup["evidenceRetained"] = not result["missingEvidence"]
             cleanup_passed = finalize_result(result, cleanup, cleanup_errors, native_checks_passed)
             (run / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            if stage_dir and cleanup_passed and result.get("buildAccepted") is True:
+                (stage_dir / "build-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
             print("EVIDENCE " + str(run / "result.json"), flush=True)
         if not cleanup_passed:
             raise RuntimeError("Cleanup did not complete. Inspect result.json and cleanup.log.")

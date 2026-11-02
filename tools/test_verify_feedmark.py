@@ -1,8 +1,11 @@
 import importlib.util
 from pathlib import Path
 import plistlib
+import socket
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
 
 spec = importlib.util.spec_from_file_location("verify_feedmark", Path(__file__).with_name("verify-feedmark.py"))
@@ -72,6 +75,84 @@ class EvidenceRetentionTests(unittest.TestCase):
             self.assertIn("native-article.png", verify_feedmark.missing_evidence(run, True))
             (run / "build.log").unlink()
             self.assertIn("build.log", verify_feedmark.missing_evidence(run, False))
+
+
+class ArtifactBoundaryTests(unittest.TestCase):
+    def test_same_run_source_hash_port_and_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "app.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("NetNewsWire.app/NetNewsWire", b"binary")
+            manifest = {"schemaVersion": 1, "runId": "123", "runAttempt": "1", "source": "abc",
+                        "fixturePort": 12345, "executable": "NetNewsWire",
+                        "archiveSha256": verify_feedmark.hashlib.sha256(archive.read_bytes()).hexdigest()}
+            receipt = {"source": "abc", "runId": "123", "runAttempt": "1", "buildAccepted": True,
+                       "cleanup": {flag: True for flag in verify_feedmark.CLEANUP_FLAGS},
+                       "cleanupErrors": [], "missingEvidence": []}
+            validate = lambda m, r: verify_feedmark.validate_boundary(m, r, "123", "1", "1", "abc", archive)
+            self.assertEqual(validate(manifest, receipt), 12345)
+            self.assertEqual(verify_feedmark.validate_boundary(manifest, receipt, "123", "1", "2", "abc", archive), 12345)
+            with self.assertRaises(ValueError):
+                verify_feedmark.validate_boundary(manifest, receipt, "123", "2", "2", "abc", archive)
+            with self.assertRaises(ValueError):
+                verify_feedmark.validate_boundary(manifest, receipt, "123", "2", "1", "abc", archive)
+            for update in ({"source": "wrong"}, {"runId": "wrong"}, {"runAttempt": "2"},
+                           {"fixturePort": 0}, {"fixturePort": 1023}, {"fixturePort": "12345"}, {"archiveSha256": "wrong"},
+                           {"executable": "../escape"}):
+                with self.subTest(update=update), self.assertRaises(ValueError):
+                    validate({**manifest, **update}, receipt)
+            with self.assertRaises(ValueError):
+                validate(manifest, {**receipt, "buildAccepted": False})
+            with self.assertRaises(ValueError):
+                validate(manifest, {**receipt, "source": "wrong"})
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("NetNewsWire.app/../../escape", b"bad")
+            manifest["archiveSha256"] = verify_feedmark.hashlib.sha256(archive.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(ValueError, "Unsafe"):
+                validate(manifest, receipt)
+            with zipfile.ZipFile(archive, "w") as bundle:
+                for name, target in (("A", "../x"), ("B", "A/../../../outside")):
+                    link = zipfile.ZipInfo("NetNewsWire.app/long/deep/" + name)
+                    link.create_system = 3
+                    link.external_attr = (verify_feedmark.stat.S_IFLNK | 0o777) << 16
+                    bundle.writestr(link, target)
+            manifest["archiveSha256"] = verify_feedmark.hashlib.sha256(archive.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(ValueError, "entry type"):
+                validate(manifest, receipt)
+            archive.unlink()
+            with self.assertRaises(ValueError):
+                validate(manifest, receipt)
+
+    def test_fixture_port_cannot_be_replaced_if_occupied(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            with self.assertRaises(OSError):
+                verify_feedmark.ThreadingHTTPServer(("127.0.0.1", listener.getsockname()[1]),
+                                                     verify_feedmark.BaseHTTPRequestHandler)
+
+    def test_extracted_identity_mode_and_fixture_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)
+            with (app / "Info.plist").open("wb") as info_file:
+                plistlib.dump({"CFBundleIdentifier": "example.app", "CFBundleExecutable": "App"}, info_file)
+            binary = app / "App"
+            binary.write_bytes(b"binary")
+            opml = verify_feedmark.fixture_opml(12345)
+            (app / "DefaultFeeds.opml").write_bytes(opml)
+            manifest = {"bundleId": "example.app", "executable": "App",
+                        "binarySha256": verify_feedmark.hashlib.sha256(binary.read_bytes()).hexdigest(),
+                        "binaryMode": 0o755,
+                        "fixtureSha256": verify_feedmark.hashlib.sha256(opml).hexdigest()}
+            with patch.object(verify_feedmark.stat, "S_IMODE", return_value=0o755):
+                self.assertEqual(verify_feedmark.validate_staged_app(app, manifest, 12345), "example.app")
+                with self.assertRaisesRegex(ValueError, "fixture"):
+                    verify_feedmark.validate_staged_app(app, manifest, 12346)
+                with self.assertRaisesRegex(ValueError, "mode"):
+                    verify_feedmark.validate_staged_app(app, {**manifest, "binaryMode": 0}, 12345)
+                binary.write_bytes(b"different")
+                with self.assertRaisesRegex(ValueError, "identity"):
+                    verify_feedmark.validate_staged_app(app, manifest, 12345)
 
 
 if __name__ == "__main__":
