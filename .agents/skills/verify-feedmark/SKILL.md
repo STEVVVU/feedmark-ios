@@ -11,13 +11,13 @@ Baseline proven on hosted run [39508929461](https://github.com/STEVVVU/feedmark-
 
 ## Launch
 
-Use the `Feedmark checks` workflow on branch `feedmark`. Its maintained driver is `python tools/verify-feedmark.py <unique-run-name>`. It refuses execution outside a dedicated macOS GitHub runner. Xcode 26.3, the iPhone 17 device type and an available iOS runtime must already exist. It creates an owned simulator, never resets a user's simulator, accepts no Xcode terms and uses the upstream unsigned simulator configuration. No developer account or provisioning update is used.
+Use the `Feedmark checks` workflow on branch `feedmark`. Its maintained driver is `python tools/verify-feedmark.py <unique-run-name>`. It refuses execution outside a dedicated macOS GitHub runner. Xcode 26.3, the iPhone 17 device type and an available iOS runtime must already exist. It creates an owned simulator for tests and, for a native drive, shuts it down and creates a separate owned simulator. It never resets a user's simulator, accepts no Xcode terms and uses the upstream unsigned simulator configuration. No developer account or provisioning update is used.
 
 The driver builds and runs the upstream iOS test plan. For this isolated build only, it replaces the bundled default feed list with a loopback synthetic RSS source and restores the original bytes during cleanup. This is verification input, not a replacement product feed list. Service API-key environment variables are removed before generating the upstream Secrets source. The test fixture uses the normal local-feed account and reader path.
 
 ## Doctor
 
-Capture actual Xcode/Java versions, installed simulator inventory, the created simulator UDID/runtime and build/test logs. Read the bundle identifier from the built app. Do not infer a working simulator from a workflow dispatch. A missing runtime, unaccepted setup, compilation error or native driver failure keeps onboarding a draft.
+Capture actual Xcode/Java versions, installed simulator inventory, both simulator UDIDs/runtime, stage timings and build/test logs. The test target uses the built app as its host. For a native drive, install the same build on the fresh simulator and compare its bundle identifier, executable name and executable SHA-256 with the built app; retain both paths and hashes in `installed-app.json`. Missing or mismatched installations fail the run. Runs 41413820454 and 41416407331 timed out on different simulator commands after XCTest. The latter subsequently retrieved the data container and app logs, so the cause is unknown; the separate simulator is an experiment, not a confirmed fix. Do not infer a working simulator from a workflow dispatch. A missing runtime, unaccepted setup, compilation error or native driver failure keeps onboarding a draft.
 
 ## Drive
 
@@ -29,11 +29,11 @@ The notebook flow uses the real article toolbar, captures its whole text, saves 
 
 ## Evidence
 
-Keep `.audit/verification/<run>/result.json`, HTTP request records, native PNGs, Maestro artifacts/JUnit, notebook JSON before/after restart and Xcode result bundle/logs. The hosted workflow uploads them for inspection. Download and view actual screenshots before accepting native rendering. The older baseline does not verify the notebook. Run39520091249 provides actual save/relaunch proof but does not clear its failed mutation step. No collaboration feature is implemented.
+Keep `.audit/verification/<run>/result.json`, HTTP request records, native PNGs, Maestro artifacts/JUnit, notebook JSON before/after restart and Xcode result bundle/logs. After cleanup, the driver checks the mode-specific evidence and records missing or invalid files in `missingEvidence`; PNGs must have a valid signature. The hosted workflow uploads them for inspection. Download and view actual screenshots before accepting native rendering. The older baseline does not verify the notebook. Run39520091249 provides actual save/relaunch proof but does not clear its failed mutation step. No collaboration feature is implemented.
 
 ## Cleanup
 
-Restore the original OPML bytes, shut down only the created simulator UDID and close the owned loopback RSS server. Retain the simulator profile, all evidence and logs until the hosted job ends. The driver does not delete user profiles or stop unrelated simulators. Confirm shutdown, fixture restoration and evidence retention in `result.json` after failures as well as success.
+Restore the original OPML bytes, shut down only the created simulator UDIDs and close the owned loopback RSS server. Retain the simulator profiles, all evidence and logs until the hosted job ends. The driver does not delete user profiles or stop unrelated simulators. Confirm shutdown, fixture restoration and evidence retention in `result.json` after failures as well as success.
 
 ## Sources and limits
 

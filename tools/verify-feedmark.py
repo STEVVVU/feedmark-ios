@@ -22,6 +22,60 @@ ROOT = Path(__file__).resolve().parents[1]
 MAESTRO_VERSION = "cli-2.11.0"
 MAESTRO_SHA256 = "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a"
 FIXTURE_CACHE_CONTROL = "max-age=1"
+CLEANUP_FLAGS = ("originalOpmlRestored", "simulatorStopped", "fixtureStopped", "evidenceRetained")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def required_evidence(native):
+    files = ["build.log", "warnings.log", "doctor.log", "fixture-requests.json"]
+    if not native:
+        return files
+    files += ["installed-app.json", "native-article.png", "maestro.log", "native-junit.xml",
+              "notebook-junit.xml", "reopen-junit.xml"]
+    files += ["notebook-" + name + ".json" for name in
+              ("saved", "reopened", "prepend", "duplicate", "deleted", "repaired", "removed")]
+    files += ["notebook-" + name + "-junit.xml" for name in
+              ("prepend", "duplicate", "deleted", "repair", "remove")]
+    screenshots = {"baseline": ("sidebar", "timeline", "article"),
+                   "notebook": ("notebook-before-open", "notebook-after-open", "notebook-before-save",
+                                "notebook-after-save", "notebook-saved"),
+                   "notebook-reopen": ("notebook-reopened",),
+                   "notebook-repair": ("notebook-repaired",), "notebook-remove": ("notebook-removed",)}
+    for version in ("prepend", "duplicate", "deleted"):
+        screenshots["notebook-" + version] = ("refresh-before-" + version, "refresh-after-" + version,
+                                              "notebook-" + version)
+    files += ["native-artifacts/*/" + flow + "/takeScreenshot/" + name + ".png"
+              for flow, names in screenshots.items() for name in names]
+    return files
+
+
+def missing_evidence(run, native):
+    def valid_png(path):
+        with path.open("rb") as image:
+            return image.read(len(PNG_SIGNATURE)) == PNG_SIGNATURE
+
+    missing = []
+    for pattern in required_evidence(native):
+        matches = [path for path in run.glob(pattern) if path.is_file() and path.stat().st_size > 0]
+        if pattern.endswith(".png"):
+            matches = [path for path in matches if valid_png(path)]
+        if not matches:
+            missing.append(pattern)
+    if not any(path.is_file() for path in (run / "baseline.xcresult").rglob("*")):
+        missing.append("baseline.xcresult/**")
+    return missing
+
+
+def finalize_result(result, cleanup, cleanup_errors, native_checks_passed):
+    cleanup_passed = all(cleanup.get(flag) is True for flag in CLEANUP_FLAGS) and not cleanup_errors
+    result["cleanup"] = cleanup
+    result["cleanupErrors"] = cleanup_errors
+    result["nativeAcceptance"] = native_checks_passed and cleanup_passed
+    return cleanup_passed
+
+
+def simulators_stopped(owned_simulators, states):
+    return all(states.get(owned) == "Shutdown" for owned in owned_simulators)
 
 
 def verify_installed_app(built_app, installed_app, receipt_path):
@@ -52,12 +106,15 @@ def main():
     run = ROOT / ".audit" / "verification" / args.run_name
     run.mkdir(parents=True, exist_ok=False)
     result = {"run": args.run_name, "actions": [], "nativeAcceptance": False, "requestedNative": not args.build_only}
+    native_checks_passed = False
     env = dict(os.environ, PROJECT_DIR=str(ROOT), MAESTRO_CLI_NO_ANALYTICS="true",
                MAESTRO_DISABLE_UPDATE_CHECK="true", MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED="true")
     for key in ("MERCURY_CLIENT_ID", "MERCURY_CLIENT_SECRET", "FEEDLY_CLIENT_ID", "FEEDLY_CLIENT_SECRET",
                 "INOREADER_APP_ID", "INOREADER_APP_KEY"):
         env.pop(key, None)
     simulator = None
+    owned_simulators = []
+    active_simulators = []
     bundle_id = None
     server = None
     thread = None
@@ -78,6 +135,17 @@ def main():
         return subprocess.check_output([str(part) for part in argv], cwd=ROOT, env=env,
                                        timeout=timeout, stdin=subprocess.DEVNULL)
 
+    def timed(action, operation):
+        started = time.monotonic()
+        succeeded = False
+        try:
+            value = operation()
+            succeeded = True
+            return value
+        finally:
+            result["actions"].append({"action": action, "simulator": simulator,
+                                      "elapsedSeconds": round(time.monotonic() - started, 3), "succeeded": succeeded})
+
     try:
         command(["xcodebuild", "-version"], "doctor.log", timeout=30)
         command(["java", "-version"], "doctor.log", timeout=15)
@@ -95,6 +163,8 @@ def main():
         device_type = next(item for item in inventory["devicetypes"] if item["name"] == "iPhone 17")
         simulator = output(["xcrun", "simctl", "create", "Feedmark-" + args.run_name,
                             device_type["identifier"], runtime["identifier"]]).decode().strip()
+        owned_simulators.append(simulator)
+        active_simulators.append(simulator)
         result["actions"].append({"action": "doctor", "simulator": simulator, "runtime": runtime["version"]})
         command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60)
         command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300)
@@ -153,7 +223,18 @@ def main():
         result["buildAccepted"] = True
         if args.build_only:
             return
-        installed_app = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "app"]).decode().strip())
+        timed("shutdown-test-simulator", lambda: command(["xcrun", "simctl", "shutdown", simulator], "simulator.log", timeout=60))
+        active_simulators.remove(simulator)
+        simulator = output(["xcrun", "simctl", "create", "Feedmark-native-" + args.run_name,
+                            device_type["identifier"], runtime["identifier"]]).decode().strip()
+        owned_simulators.append(simulator)
+        active_simulators.append(simulator)
+        result["actions"].append({"action": "create-native-simulator", "simulator": simulator, "runtime": runtime["version"]})
+        timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
+        timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
+        timed("install-native-app", lambda: command(["xcrun", "simctl", "install", simulator, app], "simulator.log", timeout=60))
+        installed_app = Path(timed("locate-native-app", lambda: output(
+            ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "app"])).decode().strip())
         receipt = verify_installed_app(app, installed_app, run / "installed-app.json")
         result["actions"].append({"action": "verify-installed-app", "sha256": receipt["installed"]["sha256"],
                                   "receipt": "installed-app.json"})
@@ -313,7 +394,7 @@ def main():
         assert removed["version"] == 1 and removed["notes"] == []
         (run / "notebook-removed.json").write_bytes(removed_bytes)
         result["actions"].append({"action": "native-remove-note", "persistedNotes": 0})
-        result["nativeAcceptance"] = True
+        native_checks_passed = True
     except BaseException as error:
         result["error"] = str(error)
         if simulator and bundle_id:
@@ -332,8 +413,8 @@ def main():
                 result["failureAppLogDiagnosticError"] = str(diagnostic_error)
         raise
     finally:
-        cleanup = {"originalOpmlRestored": False, "simulatorStopped": simulator is None,
-                   "fixtureStopped": server is None, "evidenceRetained": run.exists()}
+        cleanup = {"originalOpmlRestored": False, "simulatorStopped": not owned_simulators,
+                   "fixtureStopped": server is None, "evidenceRetained": False}
         cleanup_errors = []
         try:
             fixture_path.write_bytes(original_fixture)
@@ -341,11 +422,12 @@ def main():
         except OSError as error:
             cleanup_errors.append("OPML restoration: " + str(error))
         try:
-            if simulator:
-                command(["xcrun", "simctl", "shutdown", simulator], "cleanup.log", timeout=60)
+            if owned_simulators:
+                for owned_simulator in active_simulators:
+                    command(["xcrun", "simctl", "shutdown", owned_simulator], "cleanup.log", timeout=60)
                 devices = json.loads(output(["xcrun", "simctl", "list", "devices", "--json"]))
-                owned = next(device for group in devices["devices"].values() for device in group if device["udid"] == simulator)
-                cleanup["simulatorStopped"] = owned["state"] == "Shutdown"
+                states = {device["udid"]: device["state"] for group in devices["devices"].values() for device in group}
+                cleanup["simulatorStopped"] = simulators_stopped(owned_simulators, states)
         except Exception as error:
             cleanup_errors.append("Simulator shutdown: " + str(error))
         finally:
@@ -357,12 +439,13 @@ def main():
                     cleanup["fixtureStopped"] = not thread.is_alive()
             except Exception as error:
                 cleanup_errors.append("Fixture shutdown: " + str(error))
-            result["cleanup"] = cleanup
-            result["cleanupErrors"] = cleanup_errors
             (run / "fixture-requests.json").write_text(json.dumps(requests, indent=2), encoding="utf-8")
+            result["missingEvidence"] = missing_evidence(run, not args.build_only)
+            cleanup["evidenceRetained"] = not result["missingEvidence"]
+            cleanup_passed = finalize_result(result, cleanup, cleanup_errors, native_checks_passed)
             (run / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
             print("EVIDENCE " + str(run / "result.json"), flush=True)
-        if cleanup_errors or not all(cleanup.values()):
+        if not cleanup_passed:
             raise RuntimeError("Cleanup did not complete. Inspect result.json and cleanup.log.")
 
 
