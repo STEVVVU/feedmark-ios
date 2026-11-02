@@ -24,6 +24,22 @@ MAESTRO_SHA256 = "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e128
 FIXTURE_CACHE_CONTROL = "max-age=1"
 
 
+def verify_installed_app(built_app, installed_app, receipt_path):
+    def identity(app):
+        with (app / "Info.plist").open("rb") as info_file:
+            info = plistlib.load(info_file)
+        executable = info["CFBundleExecutable"]
+        binary = app / executable
+        return {"appPath": str(app), "bundleId": info["CFBundleIdentifier"], "executable": executable,
+                "binaryPath": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+
+    receipt = {"built": identity(built_app), "installed": identity(installed_app)}
+    receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    if any(receipt["built"][key] != receipt["installed"][key] for key in ("bundleId", "executable", "sha256")):
+        raise ValueError("Installed app identity does not match the built app; see installed-app.json.")
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("run_name")
@@ -137,7 +153,10 @@ def main():
         result["buildAccepted"] = True
         if args.build_only:
             return
-        command(["xcrun", "simctl", "install", simulator, app], "simulator.log", timeout=60)
+        installed_app = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "app"]).decode().strip())
+        receipt = verify_installed_app(app, installed_app, run / "installed-app.json")
+        result["actions"].append({"action": "verify-installed-app", "sha256": receipt["installed"]["sha256"],
+                                  "receipt": "installed-app.json"})
 
         archive_path = run / "maestro.zip"
         urllib.request.urlretrieve("https://github.com/mobile-dev-inc/Maestro/releases/download/" + MAESTRO_VERSION + "/maestro.zip", archive_path)

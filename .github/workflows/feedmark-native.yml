@@ -43,6 +43,8 @@ jobs:
           "$lint_dir/swiftlint" lint --strict iOS/Notebook Tests/NetNewsWire-iOSTests/NotebookTests.swift \
             Tests/NetNewsWire-iOSTests/ArticleStringFormatterSummaryCacheTests.swift Shared/Extensions/ArticleStringFormatter.swift \
             iOS/Article/ArticleViewController.swift iOS/Article/WebViewController.swift iOS/MainTimeline/MainTimelineViewController.swift
+      - name: Test the verification driver
+        run: python -m unittest discover -s tools -p 'test_verify_feedmark.py'
       - name: Build and run the iOS test plan
         if: github.event_name != 'workflow_dispatch' || !inputs.drive_native
         run: python tools/verify-feedmark.py ci-${{ github.run_id }} --build-only
