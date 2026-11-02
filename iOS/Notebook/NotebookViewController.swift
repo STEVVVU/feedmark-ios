@@ -1,6 +1,9 @@
 import UIKit
+import os
+import RSCore
 
 @MainActor final class NotebookViewController: UIViewController {
+	private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "Notebook")
 
 	private let snapshot: NotebookSnapshot
 	private let store: NotebookStore
@@ -100,7 +103,10 @@ import UIKit
 	}
 
 	@objc private func close() {
-		dismiss(animated: true)
+		Self.logger.debug("Notebook close action: presenter available \(self.presentingViewController != nil, privacy: .public), window available \(self.view.window != nil, privacy: .public)")
+		dismiss(animated: true) {
+			Self.logger.debug("Notebook dismissal completed")
+		}
 	}
 
 	private func capture() {

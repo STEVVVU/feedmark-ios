@@ -42,7 +42,8 @@ def required_evidence(native):
                    "notebook-reopen": ("notebook-reopened",),
                    "notebook-repair": ("notebook-repaired",), "notebook-remove": ("notebook-removed",)}
     for version in ("prepend", "duplicate", "deleted"):
-        screenshots["notebook-" + version] = ("refresh-before-" + version, "refresh-after-" + version,
+        screenshots["notebook-" + version] = ("notebook-before-dismiss-" + version, "notebook-after-dismiss-" + version,
+                                              "refresh-before-" + version, "refresh-after-" + version,
                                               "notebook-" + version)
     files += ["native-artifacts/*/" + flow + "/takeScreenshot/" + name + ".png"
               for flow, names in screenshots.items() for name in names]
@@ -344,7 +345,9 @@ def main():
             with fixture_lock:
                 fixture.update(version=version, paragraphs=paragraphs)
             drive("notebook-" + version,
+                  "- takeScreenshot: notebook-before-dismiss-" + version + "\n"
                   "- tapOn: '^Done$'\n"
+                  "- takeScreenshot: notebook-after-dismiss-" + version + "\n"
                   "- tapOn:\n    id: '^BackButton$'\n"
                   "- takeScreenshot: refresh-before-" + version + "\n"
                   "- swipe:\n    from:\n      text: 'Evidence survives the network.*'\n    direction: DOWN\n    duration: 700\n"
