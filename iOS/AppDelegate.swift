@@ -158,7 +158,10 @@ import Images
 	// MARK: - API
 
 	func manualRefresh(errorHandler: @escaping @Sendable (Error) -> Void) {
-		let sceneDelegates = UIApplication.shared.connectedScenes.compactMap { $0.delegate as? SceneDelegate }
+		let scenes: Set<UIScene> = UIApplication.shared.connectedScenes
+		let sceneDelegates: [SceneDelegate] = scenes.compactMap { (scene: UIScene) -> SceneDelegate? in
+			scene.delegate as? SceneDelegate
+		}
 		for sceneDelegate in sceneDelegates {
 			sceneDelegate.cleanUp(conditional: true)
 		}
