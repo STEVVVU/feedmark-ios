@@ -7,6 +7,7 @@
 //
 
 import UIKit
+import os
 @preconcurrency import WebKit
 import RSCore
 import RSWeb
@@ -21,6 +22,7 @@ import Images
 }
 
 final class WebViewController: UIViewController {
+	private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "Notebook")
 
 	private struct MessageName {
 		static let imageWasClicked = "imageWasClicked"
@@ -30,14 +32,17 @@ final class WebViewController: UIViewController {
 	}
 
 	func showNotebook() {
+		Self.logger.debug("Notebook request: article available \(self.article != nil, privacy: .public), web view available \(self.webView != nil, privacy: .public)")
 		guard let article, let webView else {
 			return
 		}
 		let key = NotebookArticleKey(accountID: article.accountID, articleID: article.articleID)
 		let articleTitle = article.title ?? "Untitled article"
 		webView.evaluateJavaScript("document.getElementById('bodyContainer')?.innerText ?? ''") { [weak self, weak webView] value, error in
+			Self.logger.debug("Notebook JavaScript callback: controller available \(self != nil, privacy: .public), web view available \(webView != nil, privacy: .public), error present \(error != nil, privacy: .public)")
 			guard let self, let webView, self.webView === webView,
 			      self.article?.articleID == key.articleID, self.article?.accountID == key.accountID else {
+				Self.logger.debug("Notebook JavaScript callback discarded due to changed controller state")
 				return
 			}
 			do {
@@ -51,8 +56,12 @@ final class WebViewController: UIViewController {
 				let controller = UINavigationController(rootViewController: NotebookViewController(snapshot: snapshot))
 				controller.modalPresentationStyle = .pageSheet
 				controller.sheetPresentationController?.detents = [.large()]
-				self.present(controller, animated: true)
+				Self.logger.debug("Notebook presenting: window available \(self.view.window != nil, privacy: .public), existing presentation \(self.presentedViewController != nil, privacy: .public)")
+				self.present(controller, animated: true) {
+					Self.logger.debug("Notebook presentation completed")
+				}
 			} catch {
+				Self.logger.debug("Notebook snapshot failed")
 				let alert = UIAlertController(title: "Notebook unavailable", message: error.localizedDescription, preferredStyle: .alert)
 				alert.addAction(UIAlertAction(title: "OK", style: .default))
 				self.present(alert, animated: true)

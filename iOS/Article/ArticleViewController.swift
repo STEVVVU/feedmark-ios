@@ -376,6 +376,7 @@ final class ArticleViewController: UIViewController {
 	}
 
 	@objc private func showNotebook() {
+		Self.logger.debug("Notebook toolbar action: controller available \(self.currentWebViewController != nil, privacy: .public)")
 		currentWebViewController?.showNotebook()
 	}
 

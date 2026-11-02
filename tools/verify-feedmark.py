@@ -177,7 +177,9 @@ def main():
         result["actions"].append({"action": "native-read", "feedRequests": len(requests), "screenshot": "native-article.png"})
         notebook_flow = run / "notebook.yaml"
         notebook_flow.write_text("appId: " + bundle_id + "\n---\n"
+                                 "- takeScreenshot: notebook-before-open\n"
                                  "- tapOn: 'Reading notebook'\n"
+                                 "- takeScreenshot: notebook-after-open\n"
                                  "- assertVisible: 'Capture selected passage'\n"
                                  "- tapOn:\n    id: notebook.captureWhole\n"
                                  "- scrollUntilVisible:\n    element:\n      id: notebook.note\n    direction: DOWN\n"
