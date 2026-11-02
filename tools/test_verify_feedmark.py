@@ -3,6 +3,7 @@ from pathlib import Path
 import plistlib
 import socket
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -54,6 +55,94 @@ class ResultFinalizationTests(unittest.TestCase):
         self.assertTrue(verify_feedmark.simulators_stopped(owned, {"test": "Shutdown", "native": "Shutdown"}))
         self.assertFalse(verify_feedmark.simulators_stopped(owned, {"test": "Shutdown", "native": "Booted"}))
         self.assertFalse(verify_feedmark.simulators_stopped(owned, {"test": "Shutdown"}))
+
+
+class NativePhaseTests(unittest.TestCase):
+    class Process:
+        def __init__(self):
+            self.killed = threading.Event()
+
+        def poll(self):
+            return None if not self.killed.is_set() else -9
+
+        def kill(self):
+            self.killed.set()
+
+    def test_ordered_callbacks_and_failure_are_enforced(self):
+        controller = verify_feedmark.PhaseController(("one", "two"), timeout=10)
+        controller.start(self.Process())
+        self.assertEqual(controller.advance("one", lambda: {"value": 3}), {"value": 3})
+        with self.assertRaisesRegex(RuntimeError, "Unexpected"):
+            controller.advance("one", lambda: None)
+        with self.assertRaisesRegex(RuntimeError, "Unexpected"):
+            controller.close()
+
+        controller = verify_feedmark.PhaseController(("one", "two"), timeout=10)
+        controller.start(self.Process())
+        controller.advance("one", lambda: None)
+        controller.advance("two", lambda: None)
+        controller.close()
+        self.assertEqual([event["phase"] for event in controller.events], ["one", "two"])
+
+    def test_callback_error_and_deadline_fail_closed(self):
+        process = self.Process()
+        controller = verify_feedmark.PhaseController(("one",), timeout=0.05)
+        controller.start(process)
+        def fail():
+            raise ValueError("archive mismatch")
+        with self.assertRaisesRegex(ValueError, "archive mismatch"):
+            controller.advance("one", fail)
+        self.assertTrue(process.killed.wait(2))
+        with self.assertRaisesRegex(RuntimeError, "archive mismatch"):
+            controller.close()
+
+        process = self.Process()
+        controller = verify_feedmark.PhaseController(("one",), timeout=0.05)
+        controller.start(process)
+        self.assertTrue(process.killed.wait(2))
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            controller.close()
+
+    def test_close_does_not_allow_inflight_callback_to_advance(self):
+        controller = verify_feedmark.PhaseController(("one", "two"), timeout=10)
+        controller.start(self.Process())
+        entered = threading.Event()
+        release = threading.Event()
+        failures = []
+        def action():
+            entered.set()
+            release.wait(2)
+        def invoke():
+            try:
+                controller.advance("one", action)
+            except RuntimeError as error:
+                failures.append(str(error))
+        worker = threading.Thread(target=invoke)
+        worker.start()
+        self.assertTrue(entered.wait(2))
+        with self.assertRaisesRegex(RuntimeError, "before all phases"):
+            controller.close()
+        release.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(controller.events, [])
+        self.assertEqual(failures, ["Native campaign already closed."])
+
+        process = self.Process()
+        controller = verify_feedmark.PhaseController(("one",), timeout=0.05)
+        controller.start(process)
+        with self.assertRaisesRegex(TimeoutError, "timed out"):
+            controller.advance("one", lambda: process.killed.wait(2))
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            controller.close()
+
+        process = self.Process()
+        controller = verify_feedmark.PhaseController(("one",), timeout=0.05)
+        controller.start(process)
+        controller.advance("one", lambda: None)
+        self.assertTrue(process.killed.wait(2))
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            controller.close()
 
 
 class EvidenceRetentionTests(unittest.TestCase):

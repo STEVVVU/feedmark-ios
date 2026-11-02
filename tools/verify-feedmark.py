@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import secrets
 import stat
 import subprocess
 import threading
@@ -25,18 +26,100 @@ MAESTRO_SHA256 = "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e128
 FIXTURE_CACHE_CONTROL = "max-age=1"
 CLEANUP_FLAGS = ("originalOpmlRestored", "simulatorStopped", "fixtureStopped", "evidenceRetained")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+NATIVE_PHASES = ("baseline", "notebook", "reopen", "prepend", "duplicate", "deleted", "repair", "remove")
+
+
+class PhaseController:
+    def __init__(self, phases, timeout=300):
+        self.phases = phases
+        self.timeout = timeout
+        self.index = 0
+        self.error = None
+        self.events = []
+        self.lock = threading.Lock()
+        self.busy = False
+        self.closed = False
+        self.callback_done = threading.Event()
+        self.callback_done.set()
+        self.ready = threading.Event()
+        self.timer = None
+        self.process = None
+
+    def start(self, process):
+        with self.lock:
+            self.process = process
+            self._arm()
+            self.ready.set()
+
+    def _arm(self):
+        self.started = time.monotonic()
+        self.timer = threading.Timer(self.timeout, self._expire, args=(self.index,))
+        self.timer.daemon = True
+        self.timer.start()
+
+    def _expire(self, index):
+        with self.lock:
+            if self.closed or (index != self.index and not (self.index == len(self.phases) and index == self.index - 1)):
+                return
+            self.error = self.error or "Native phase timed out: " + self.phases[min(index, len(self.phases) - 1)]
+            if self.process.poll() is None:
+                self.process.kill()
+
+    def advance(self, phase, action):
+        if not self.ready.wait(self.timeout):
+            raise TimeoutError("Native phase controller did not start.")
+        with self.lock:
+            if self.closed or self.error or self.busy or self.index >= len(self.phases) or self.phases[self.index] != phase:
+                self.error = self.error or "Unexpected native phase: " + phase
+                raise RuntimeError(self.error)
+            self.busy = True
+            self.callback_done.clear()
+        try:
+            value = action()
+            with self.lock:
+                if self.closed:
+                    raise RuntimeError("Native campaign already closed.")
+                if self.error or time.monotonic() - self.started >= self.timeout:
+                    self.error = self.error or "Native phase timed out: " + phase
+                    raise TimeoutError(self.error)
+                self.events.append({"phase": phase, "elapsedSeconds": round(time.monotonic() - self.started, 3)})
+                self.index += 1
+                if self.index < len(self.phases):
+                    self.timer.cancel()
+                    self._arm()
+            return value
+        except BaseException as error:
+            with self.lock:
+                self.error = self.error or str(error) or type(error).__name__
+            raise
+        finally:
+            with self.lock:
+                self.busy = False
+                self.callback_done.set()
+
+    def ensure_active(self):
+        with self.lock:
+            if self.closed or self.error:
+                raise RuntimeError(self.error or "Native campaign already closed.")
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            if self.timer:
+                self.timer.cancel()
+            if self.error:
+                raise RuntimeError(self.error)
+            if self.index != len(self.phases):
+                raise RuntimeError("Native campaign ended before all phases completed.")
 
 
 def required_evidence(native):
     files = ["build.log", "warnings.log", "doctor.log", "fixture-requests.json"]
     if not native:
         return files
-    files += ["installed-app.json", "native-article.png", "maestro.log", "native-junit.xml",
-              "notebook-junit.xml", "reopen-junit.xml"]
+    files += ["installed-app.json", "native-article.png", "maestro.log", "campaign-junit.xml"]
     files += ["notebook-" + name + ".json" for name in
               ("saved", "reopened", "prepend", "duplicate", "deleted", "repaired", "removed")]
-    files += ["notebook-" + name + "-junit.xml" for name in
-              ("prepend", "duplicate", "deleted", "repair", "remove")]
     screenshots = {"baseline": ("sidebar", "timeline", "article"),
                    "notebook": ("notebook-before-open", "notebook-after-open", "notebook-before-save",
                                 "notebook-after-save", "notebook-saved"),
@@ -46,8 +129,8 @@ def required_evidence(native):
         screenshots["notebook-" + version] = ("notebook-before-dismiss-" + version, "notebook-after-dismiss-" + version,
                                               "refresh-before-" + version, "refresh-after-" + version,
                                               "notebook-" + version)
-    files += ["native-artifacts/*/" + flow + "/takeScreenshot/" + name + ".png"
-              for flow, names in screenshots.items() for name in names]
+    files += ["native-artifacts/*/campaign/takeScreenshot/" + name + ".png"
+              for names in screenshots.values() for name in names]
     return files
 
 
@@ -194,6 +277,9 @@ def main():
     original_article = "Local synthetic article for native reader verification."
     fixture = {"version": "original", "paragraphs": [original_article]}
     fixture_lock = threading.Lock()
+    callback_token = secrets.token_urlsafe(24)
+    phase_callback = None
+    phase_controller = None
 
     def command(argv, log_name, timeout=1800):
         print("RUN " + " ".join(str(part) for part in argv), flush=True)
@@ -270,6 +356,22 @@ def main():
             command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300)
 
         class FixtureHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                prefix = "/__verify/" + callback_token + "/"
+                if not self.path.startswith(prefix) or phase_callback is None:
+                    self.send_error(404)
+                    return
+                try:
+                    payload = json.dumps(phase_callback(self.path[len(prefix):])).encode()
+                    self.send_response(200)
+                except Exception as error:
+                    payload = json.dumps({"error": str(error)}).encode()
+                    self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
             def do_GET(self):
                 with fixture_lock:
                     version = fixture["version"]
@@ -388,12 +490,6 @@ def main():
                         "- tapOn: 'Evidence survives the network.*'\n"
                         "- assertVisible: 'Local synthetic article for native reader verification.*'\n"
                         "- takeScreenshot: article\n", encoding="utf-8")
-        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "native-junit.xml",
-                 "--debug-output", run / "maestro-evidence", "--test-output-dir", run / "native-artifacts", flow], "maestro.log", timeout=300)
-        assert any(item["path"] == "/feed.xml" for item in requests), "The actual app did not fetch the controlled RSS source."
-        command(["xcrun", "simctl", "io", simulator, "screenshot", run / "native-article.png"], "simulator.log", timeout=30)
-        assert (run / "native-article.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-        result["actions"].append({"action": "native-read", "feedRequests": len(requests), "screenshot": "native-article.png"})
         notebook_flow = run / "notebook.yaml"
         notebook_flow.write_text("appId: " + bundle_id + "\n---\n"
                                  "- takeScreenshot: notebook-before-open\n"
@@ -414,18 +510,6 @@ def main():
                                  "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
                                  "- assertVisible: 'Attached to this snapshot'\n"
                                  "- takeScreenshot: notebook-saved\n", encoding="utf-8")
-        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--no-reinstall-driver", "--output", run / "notebook-junit.xml",
-                 "--debug-output", run / "notebook-evidence", "--test-output-dir", run / "native-artifacts", notebook_flow], "maestro.log", timeout=300)
-        container = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"]).decode().strip())
-        notebook_file = container / "Library/Application Support/FeedmarkNotebook/notes.json"
-        saved_bytes = notebook_file.read_bytes()
-        (run / "notebook-saved.json").write_bytes(saved_bytes)
-        saved = json.loads(saved_bytes)
-        assert saved["version"] == 1 and len(saved["notes"]) == 1
-        assert saved["notes"][0]["note"] == "Source context matters"
-        assert saved["notes"][0]["anchors"][0]["quote"] == "Local synthetic article for native reader verification."
-        result["actions"].append({"action": "native-save-note", "notes": 1, "originalQuoteRetained": True})
-        command(["xcrun", "simctl", "terminate", simulator, bundle_id], "simulator.log", timeout=30)
         restore_flow = run / "notebook-reopen.yaml"
         restore_flow.write_text("appId: " + bundle_id + "\n---\n"
                                 "- launchApp:\n    permissions:\n      all: deny\n"
@@ -433,18 +517,9 @@ def main():
                                 "- scrollUntilVisible:\n    element:\n      text: 'Source context matters'\n    direction: DOWN\n"
                                 "- assertVisible: 'Attached to this snapshot'\n"
                                 "- takeScreenshot: notebook-reopened\n", encoding="utf-8")
-        command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--no-reinstall-driver", "--output", run / "reopen-junit.xml",
-                 "--debug-output", run / "reopen-evidence", "--test-output-dir", run / "native-artifacts", restore_flow], "maestro.log", timeout=300)
-        assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
-        (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
-        result["actions"].append({"action": "native-note-restart", "exactFileRetained": True})
-
         def drive(name, steps):
             path = run / (name + ".yaml")
             path.write_text("appId: " + bundle_id + "\n---\n" + steps, encoding="utf-8")
-            command([maestro, "--device", simulator, "test", "--format", "JUNIT", "--no-reinstall-driver", "--output", run / (name + "-junit.xml"),
-                     "--debug-output", run / (name + "-evidence"), "--test-output-dir", run / "native-artifacts", path],
-                    "maestro.log", timeout=300)
 
         def visible(text, timeout=30000):
             return "- extendedWaitUntil:\n    visible: " + json.dumps("(?s).*" + re.escape(text) + ".*") + f"\n    timeout: {timeout}\n"
@@ -460,8 +535,6 @@ def main():
              "Passage missing or context changed. Original quote retained."),
         ]
         for version, paragraphs, marker, status in changes:
-            with fixture_lock:
-                fixture.update(version=version, paragraphs=paragraphs)
             drive("notebook-" + version,
                   "- takeScreenshot: notebook-before-dismiss-" + version + "\n"
                   "- tapOn: '^Done$'\n"
@@ -477,14 +550,7 @@ def main():
                   + scroll_to(status)
                   + "- assertVisible: " + json.dumps(re.escape("Original quote: " + original_article)) + "\n"
                   + "- takeScreenshot: notebook-" + version + "\n")
-            assert any(item["path"] == "/feed.xml" and item["version"] == version for item in requests), "No actual RSS fetch for " + version
-            assert notebook_file.read_bytes() == saved_bytes, "Attachment inspection changed the original note."
-            (run / ("notebook-" + version + ".json")).write_bytes(notebook_file.read_bytes())
-            result["actions"].append({"action": "native-refresh-attachment", "version": version,
-                                      "visibleStatus": status, "originalArchiveUnchanged": True})
-
-        note_id = saved["notes"][0]["id"]
-        repair_id = "notebook.repair." + note_id
+        repair_id = "notebook.repair.${output.noteId}"
         drive("notebook-repair",
               "- scrollUntilVisible:\n    element:\n      id: notebook.captureWhole\n    direction: UP\n"
               "- tapOn:\n    id: notebook.captureWhole\n"
@@ -493,16 +559,7 @@ def main():
               + scroll_to("Repairs: 1")
               + "- assertVisible: 'Attached to this snapshot'\n"
               "- takeScreenshot: notebook-repaired\n")
-        repaired_bytes = notebook_file.read_bytes()
-        repaired = json.loads(repaired_bytes)["notes"][0]
-        original_note = saved["notes"][0]
-        assert repaired["id"] == note_id and repaired["key"] == original_note["key"]
-        assert repaired["originalText"] == original_note["originalText"] and repaired["note"] == original_note["note"]
-        assert len(repaired["anchors"]) == 2 and repaired["anchors"][0] == original_note["anchors"][0]
-        assert repaired["anchors"][-1]["quote"] == "Replacement passage selected explicitly."
-        (run / "notebook-repaired.json").write_bytes(repaired_bytes)
-        result["actions"].append({"action": "native-repair-note", "priorAnchorRetained": True, "repairs": 1})
-        remove_id = "notebook.remove." + note_id
+        remove_id = "notebook.remove.${output.noteId}"
         drive("notebook-remove",
               "- scrollUntilVisible:\n    element:\n      id: " + remove_id + "\n    direction: DOWN\n"
               "- tapOn:\n    id: " + remove_id + "\n"
@@ -510,15 +567,104 @@ def main():
               "- tapOn: '^Remove$'\n"
               + scroll_to("No notes for this article yet.")
               + "- takeScreenshot: notebook-removed\n")
-        removed_bytes = notebook_file.read_bytes()
-        removed = json.loads(removed_bytes)
-        assert removed["version"] == 1 and removed["notes"] == []
-        (run / "notebook-removed.json").write_bytes(removed_bytes)
-        result["actions"].append({"action": "native-remove-note", "persistedNotes": 0})
+        saved_bytes = None
+        saved = None
+        notebook_file = None
+        phase_controller = PhaseController(NATIVE_PHASES)
+
+        def check_phase(phase):
+            nonlocal saved_bytes, saved, notebook_file
+            def check():
+                nonlocal saved_bytes, saved, notebook_file
+                if phase == "baseline":
+                    assert any(item["path"] == "/feed.xml" for item in requests), "The actual app did not fetch the controlled RSS source."
+                    command(["xcrun", "simctl", "io", simulator, "screenshot", run / "native-article.png"], "simulator.log", timeout=30)
+                    phase_controller.ensure_active()
+                    assert (run / "native-article.png").read_bytes().startswith(PNG_SIGNATURE)
+                    result["actions"].append({"action": "native-read", "feedRequests": len(requests), "screenshot": "native-article.png"})
+                elif phase == "notebook":
+                    container = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"]).decode().strip())
+                    phase_controller.ensure_active()
+                    notebook_file = container / "Library/Application Support/FeedmarkNotebook/notes.json"
+                    saved_bytes = notebook_file.read_bytes()
+                    (run / "notebook-saved.json").write_bytes(saved_bytes)
+                    saved = json.loads(saved_bytes)
+                    assert saved["version"] == 1 and len(saved["notes"]) == 1
+                    assert saved["notes"][0]["note"] == "Source context matters"
+                    assert saved["notes"][0]["anchors"][0]["quote"] == original_article
+                    result["actions"].append({"action": "native-save-note", "notes": 1, "originalQuoteRetained": True})
+                    command(["xcrun", "simctl", "terminate", simulator, bundle_id], "simulator.log", timeout=30)
+                    return {"noteId": saved["notes"][0]["id"]}
+                elif phase == "reopen":
+                    assert notebook_file.read_bytes() == saved_bytes, "Restart changed the saved note."
+                    (run / "notebook-reopened.json").write_bytes(notebook_file.read_bytes())
+                    result["actions"].append({"action": "native-note-restart", "exactFileRetained": True})
+                    with fixture_lock:
+                        fixture.update(version=changes[0][0], paragraphs=changes[0][1])
+                elif phase in ("prepend", "duplicate", "deleted"):
+                    assert any(item["path"] == "/feed.xml" and item["version"] == phase for item in requests), "No actual RSS fetch for " + phase
+                    assert notebook_file.read_bytes() == saved_bytes, "Attachment inspection changed the original note."
+                    (run / ("notebook-" + phase + ".json")).write_bytes(notebook_file.read_bytes())
+                    change_index = next(index for index, change in enumerate(changes) if change[0] == phase)
+                    result["actions"].append({"action": "native-refresh-attachment", "version": phase,
+                                              "visibleStatus": changes[change_index][3], "originalArchiveUnchanged": True})
+                    if change_index + 1 < len(changes):
+                        with fixture_lock:
+                            fixture.update(version=changes[change_index + 1][0], paragraphs=changes[change_index + 1][1])
+                elif phase == "repair":
+                    repaired_bytes = notebook_file.read_bytes()
+                    repaired = json.loads(repaired_bytes)["notes"][0]
+                    original_note = saved["notes"][0]
+                    assert repaired["id"] == original_note["id"] and repaired["key"] == original_note["key"]
+                    assert repaired["originalText"] == original_note["originalText"] and repaired["note"] == original_note["note"]
+                    assert len(repaired["anchors"]) == 2 and repaired["anchors"][0] == original_note["anchors"][0]
+                    assert repaired["anchors"][-1]["quote"] == "Replacement passage selected explicitly."
+                    (run / "notebook-repaired.json").write_bytes(repaired_bytes)
+                    result["actions"].append({"action": "native-repair-note", "priorAnchorRetained": True, "repairs": 1})
+                elif phase == "remove":
+                    removed_bytes = notebook_file.read_bytes()
+                    removed = json.loads(removed_bytes)
+                    assert removed["version"] == 1 and removed["notes"] == []
+                    (run / "notebook-removed.json").write_bytes(removed_bytes)
+                    result["actions"].append({"action": "native-remove-note", "persistedNotes": 0})
+                return {}
+            return phase_controller.advance(phase, check)
+
+        phase_callback = check_phase
+        (run / "campaign-evidence").mkdir()
+        (run / "campaign-evidence/phase.js").write_text(
+            "var r = http.post(" + json.dumps("http://127.0.0.1:" + str(port) + "/__verify/" + callback_token + "/") +
+            " + PHASE, {body: ''});\nif (!r.ok) throw new Error('Phase failed: ' + PHASE + ' ' + r.body);\n"
+            "var data = json(r.body);\nif (data.noteId) output.noteId = data.noteId;\n", encoding="utf-8")
+        phase_files = ("baseline", "notebook", "notebook-reopen", "notebook-prepend", "notebook-duplicate",
+                       "notebook-deleted", "notebook-repair", "notebook-remove")
+        campaign = "appId: " + bundle_id + "\n---\n"
+        for phase, filename in zip(NATIVE_PHASES, phase_files):
+            campaign += "- runFlow: " + filename + ".yaml\n- runScript:\n    file: campaign-evidence/phase.js\n    env:\n      PHASE: " + phase + "\n"
+        (run / "campaign.yaml").write_text(campaign, encoding="utf-8")
+        argv = [maestro, "--device", simulator, "test", "--format", "JUNIT", "--output", run / "campaign-junit.xml",
+                "--debug-output", run / "maestro-evidence", "--test-output-dir", run / "native-artifacts", run / "campaign.yaml"]
+        print("RUN " + " ".join(str(part) for part in argv), flush=True)
+        with (run / "maestro.log").open("ab") as log:
+            process = subprocess.Popen([str(part) for part in argv], cwd=ROOT, env=env, stdout=log,
+                                       stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            try:
+                phase_controller.start(process)
+                returncode = process.wait()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                result["nativePhases"] = phase_controller.events
+                phase_controller.close()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, argv)
         native_checks_passed = True
     except BaseException as error:
         result["error"] = str(error)
-        if simulator and bundle_id:
+        if phase_controller:
+            result["failurePhaseCallbackStopped"] = phase_controller.callback_done.wait(timeout=30)
+        if simulator and bundle_id and result.get("failurePhaseCallbackStopped", True):
             try:
                 container = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"]).decode().strip())
                 notebook_file = container / "Library/Application Support/FeedmarkNotebook/notes.json"
@@ -537,6 +683,8 @@ def main():
         cleanup = {"originalOpmlRestored": False, "simulatorStopped": not owned_simulators,
                    "fixtureStopped": server is None, "evidenceRetained": False}
         cleanup_errors = []
+        if phase_controller and not phase_controller.callback_done.is_set():
+            cleanup_errors.append("Native phase callback did not stop after the deadline")
         try:
             fixture_path.write_bytes(original_fixture)
             cleanup["originalOpmlRestored"] = fixture_path.read_bytes() == original_fixture
