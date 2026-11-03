@@ -416,6 +416,7 @@ def main():
             command(["bash", "buildscripts/updateSecrets.sh"], "build.log", timeout=60)
             command(["xcodebuild", "-project", "NetNewsWire.xcodeproj", "-scheme", "NetNewsWire-iOS",
                  "-testPlan", "NetNewsWire-iOS", "-xcconfig", ".github/ios-ci-no-signing.xcconfig",
+                 "-jobs", "2", "-showBuildTimingSummary",
                  "-destination", "platform=iOS Simulator,id=" + simulator,
                  "-parallel-testing-enabled", "NO",
                  "-derivedDataPath", run / "DerivedData", "-resultBundlePath", run / "baseline.xcresult",
