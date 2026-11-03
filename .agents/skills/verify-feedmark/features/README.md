@@ -14,3 +14,5 @@ The diagnostic run 41558584026 stopped earlier: lint and 15 driver tests passed,
 Run 41561395578 then stopped in `manualRefresh` at 1,257 ms against 800 ms. Function/expression CPU timing output and the exact compiler version are now retained for a build-only investigation. These timings do not prove native behavior or a compiler performance improvement. All native paths remain required before restoring the project to the résumé.
 
 Run 41564626328 reports Apple Swift 6.2.4 and a 1,116.29 ms enclosing function, with individually small expression timers. The next diagnostic uses built-in request/entity profiling retained in `compiler-evidence/` to investigate the broader scope. No source cause, native acceptance or measured improvement is inferred from that gap.
+
+Run 41569061036 timed out during simulator boot and cleanup before the compiler ran. The next driver compiles the same test plan before creating the owned simulator, then requires that simulator and all 23 current tests before staging. This sequence awaits hosted proof; all native feature paths remain required.

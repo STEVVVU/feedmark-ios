@@ -11,6 +11,7 @@ import platform
 import plistlib
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import threading
@@ -114,7 +115,8 @@ class PhaseController:
 
 
 def required_evidence(native):
-    files = ["build.log", "warnings.log", "doctor.log", "simulator-sdk.log", "fixture-requests.json"]
+    files = ["build.log", "warnings.log", "doctor.log", "simulator-sdk.log", "fixture-requests.json",
+             "build-evidence/app-identity.json", "build-evidence/*.xctestrun"]
     if not native:
         return files
     files += ["installed-app.json", "native-article.png", "maestro.log", "campaign-junit.xml"]
@@ -142,7 +144,8 @@ def missing_evidence(run, native, native_only=False):
     missing = []
     patterns = required_evidence(native)
     if native_only:
-        patterns = [pattern for pattern in patterns if pattern not in ("build.log", "warnings.log")]
+        patterns = [pattern for pattern in patterns if pattern not in
+                    ("build.log", "warnings.log", "build-evidence/app-identity.json", "build-evidence/*.xctestrun")]
         patterns += ["build-manifest.json", "build-result.json"]
     for pattern in patterns:
         matches = [path for path in run.glob(pattern) if path.is_file() and path.stat().st_size > 0]
@@ -150,8 +153,10 @@ def missing_evidence(run, native, native_only=False):
             matches = [path for path in matches if valid_png(path)]
         if not matches:
             missing.append(pattern)
-    if not native_only and not any(path.is_file() for path in (run / "baseline.xcresult").rglob("*")):
-        missing.append("baseline.xcresult/**")
+    if not native_only:
+        for name in ("build.xcresult", "baseline.xcresult"):
+            if not any(path.is_file() and path.stat().st_size > 0 for path in (run / name).rglob("*")):
+                missing.append(name + "/**")
     return missing
 
 
@@ -203,6 +208,56 @@ def simulators_stopped(owned_simulators, states):
     return all(states.get(owned) == "Shutdown" for owned in owned_simulators)
 
 
+def cleanup_simulators(owned_simulators, command, output):
+    errors = []
+    def states():
+        devices = json.loads(output(["xcrun", "simctl", "list", "devices", "--json"]))
+        return {device["udid"]: device["state"] for group in devices["devices"].values() for device in group}
+    try:
+        initial = states()
+    except Exception as error:
+        errors.append("Simulator initial state probe: " + str(error))
+        initial = {}
+    for owned in owned_simulators:
+        if initial.get(owned) != "Shutdown":
+            try:
+                command(["xcrun", "simctl", "shutdown", owned], "cleanup.log", timeout=60)
+            except Exception as error:
+                errors.append("Simulator shutdown " + owned + ": " + str(error))
+    try:
+        final = states()
+        stopped = simulators_stopped(owned_simulators, final)
+        for owned in owned_simulators:
+            if final.get(owned) != "Shutdown":
+                errors.append("Simulator final state " + owned + ": " + str(final.get(owned, "missing")))
+    except Exception as error:
+        errors.append("Simulator final state probe: " + str(error))
+        stopped = False
+    return stopped, errors
+
+
+def run_build_test(build, prepare, boot, test, verify, clock=time.monotonic):
+    start = clock()
+    build(1800)
+    remaining = 1800 - (clock() - start)
+    if remaining <= 0:
+        raise TimeoutError("Build exhausted the shared Xcode command budget.")
+    prepare()
+    boot()
+    start = clock()
+    test(remaining)
+    if clock() - start > remaining:
+        raise TimeoutError("Build and test exceeded the shared Xcode command budget.")
+    verify()
+
+
+def swift_test_count(test_log):
+    counts = re.findall(r"(?m)^.*Test run with (\d+) tests? in \d+ suites? passed after [^\r\n]+$", test_log)
+    if len(counts) != 1 or int(counts[0]) < 23:
+        raise ValueError("The test action did not prove one passing Swift Testing run with at least 23 tests.")
+    return int(counts[0])
+
+
 def select_ios_runtime(runtimes, sdk_version):
     sdk_minor = tuple(int(part) for part in sdk_version.split("."))[:2]
     if len(sdk_minor) != 2:
@@ -235,16 +290,37 @@ def validate_staged_app(app, manifest, port):
     return info["CFBundleIdentifier"]
 
 
-def verify_installed_app(built_app, installed_app, receipt_path):
-    def identity(app):
-        with (app / "Info.plist").open("rb") as info_file:
-            info = plistlib.load(info_file)
-        executable = info["CFBundleExecutable"]
-        binary = app / executable
-        return {"appPath": str(app), "bundleId": info["CFBundleIdentifier"], "executable": executable,
-                "binaryPath": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+def app_identity(app):
+    with (app / "Info.plist").open("rb") as info_file:
+        info = plistlib.load(info_file)
+    executable = info["CFBundleExecutable"]
+    binary = app / executable
+    return {"appPath": str(app), "bundleId": info["CFBundleIdentifier"], "executable": executable,
+            "binaryPath": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "mode": stat.S_IMODE(binary.stat().st_mode)}
 
-    receipt = {"built": identity(built_app), "installed": identity(installed_app)}
+
+def prepare_test_product(app, products, evidence):
+    before_test = app_identity(app)
+    test_runs = list(products.glob("*.xctestrun"))
+    if not test_runs or any(path.is_symlink() or not path.is_file() or path.stat().st_size == 0 for path in test_runs):
+        raise ValueError("Build did not produce regular nonempty xctestrun metadata.")
+    for test_run in test_runs:
+        shutil.copy2(test_run, evidence / test_run.name)
+    (evidence / "app-identity.json").write_text(json.dumps({"beforeTest": before_test, "afterTest": None}, indent=2), encoding="utf-8")
+    return before_test
+
+
+def verify_test_product(app, before_test, test_log, receipt_path):
+    after_test = app_identity(app)
+    receipt_path.write_text(json.dumps({"beforeTest": before_test, "afterTest": after_test}, indent=2), encoding="utf-8")
+    if before_test != after_test:
+        raise ValueError("Built app identity changed during testing.")
+    return swift_test_count(test_log)
+
+
+def verify_installed_app(built_app, installed_app, receipt_path):
+    receipt = {"built": app_identity(built_app), "installed": app_identity(installed_app)}
     receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     if any(receipt["built"][key] != receipt["installed"][key] for key in ("bundleId", "executable", "sha256")):
         raise ValueError("Installed app identity does not match the built app; see installed-app.json.")
@@ -306,7 +382,6 @@ def main():
         env.pop(key, None)
     simulator = None
     owned_simulators = []
-    active_simulators = []
     bundle_id = None
     server = None
     thread = None
@@ -373,28 +448,34 @@ def main():
             result["buildAccepted"] = True
             result["actions"].append({"action": "verify-staged-build", "source": source, "runId": run_id,
                                       "binarySha256": manifest["binarySha256"], "fixturePort": fixture_port})
-        inventory_started = time.monotonic()
-        try:
-            command(["xcrun", "simctl", "list", "--json"], "simulator-inventory.log", timeout=120)
-        finally:
-            result["actions"].append({"action": "simulator-inventory-probe",
-                                      "elapsedSeconds": round(time.monotonic() - inventory_started, 3),
-                                      "deadlineSeconds": 120})
-        inventory = json.loads((run / "simulator-inventory.log").read_text(encoding="utf-8"))
-        (run / "simulator-inventory.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
-        runtime = select_ios_runtime(inventory["runtimes"], sdk_version)
-        device_type = next(item for item in inventory["devicetypes"] if item["name"] == "iPhone 17")
-        simulator = output(["xcrun", "simctl", "create", "Feedmark-" + args.run_name,
-                            device_type["identifier"], runtime["identifier"]]).decode().strip()
-        owned_simulators.append(simulator)
-        active_simulators.append(simulator)
-        result["actions"].append({"action": "doctor", "simulator": simulator, "runtime": runtime["version"], "sdk": sdk_version})
+        def create_and_boot(native=False):
+            nonlocal simulator
+            inventory_log = "simulator-native-inventory.log" if owned_simulators else "simulator-inventory.log"
+            inventory_started = time.monotonic()
+            try:
+                command(["xcrun", "simctl", "list", "--json"], inventory_log, timeout=120)
+            finally:
+                result["actions"].append({"action": "simulator-inventory-probe",
+                                          "elapsedSeconds": round(time.monotonic() - inventory_started, 3),
+                                          "deadlineSeconds": 120})
+            inventory = json.loads((run / inventory_log).read_text(encoding="utf-8"))
+            (run / "simulator-inventory.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+            runtime = select_ios_runtime(inventory["runtimes"], sdk_version)
+            device_type = next(item for item in inventory["devicetypes"] if item["name"] == "iPhone 17")
+            name = ("Feedmark-native-" if native and owned_simulators else "Feedmark-") + args.run_name
+            simulator = output(["xcrun", "simctl", "create", name,
+                                device_type["identifier"], runtime["identifier"]]).decode().strip()
+            owned_simulators.append(simulator)
+            result["actions"].append({"action": "doctor", "simulator": simulator, "runtime": runtime["version"], "sdk": sdk_version})
+            if native:
+                timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
+                timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
+            else:
+                command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60)
+                command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300)
+
         if args.native_from:
-            timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
-            timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
-        else:
-            command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60)
-            command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300)
+            create_and_boot(native=True)
 
         class FixtureHandler(BaseHTTPRequestHandler):
             def do_POST(self):
@@ -458,18 +539,49 @@ def main():
             compiler_evidence = run / "compiler-evidence"
             compiler_evidence.mkdir()
             command(["xcrun", "swiftc", "-frontend", "-help-hidden"], "compiler-options.log", timeout=30)
-            command(["xcodebuild", "-project", "NetNewsWire.xcodeproj", "-scheme", "NetNewsWire-iOS",
-                 "-testPlan", "NetNewsWire-iOS", "-xcconfig", ".github/ios-ci-no-signing.xcconfig",
-                 "-jobs", "2", "-showBuildTimingSummary",
-                 "-destination", "platform=iOS Simulator,id=" + simulator,
-                 "-parallel-testing-enabled", "NO",
-                 "-derivedDataPath", run / "DerivedData", "-resultBundlePath", run / "baseline.xcresult",
-                 "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS "
-                 "-Xfrontend -debug-time-function-bodies "
-                 f'-Xfrontend -stats-output-dir -Xfrontend "{compiler_evidence}" '
-                 "-Xfrontend -fine-grained-timers -Xfrontend -profile-stats-entities", "test"], "build.log")
-            command(["bash", "buildscripts/fail_on_warnings.sh", run / "build.log"], "warnings.log", timeout=30)
+            architecture = platform.machine()
+            if architecture not in ("x86_64", "arm64"):
+                raise ValueError("Unsupported simulator host architecture: " + architecture)
+            common = ["xcodebuild", "-project", "NetNewsWire.xcodeproj", "-scheme", "NetNewsWire-iOS",
+                      "-testPlan", "NetNewsWire-iOS", "-xcconfig", ".github/ios-ci-no-signing.xcconfig",
+                      "-jobs", "2", "-showBuildTimingSummary", "-parallel-testing-enabled", "NO",
+                      "-derivedDataPath", run / "DerivedData", "ARCHS=" + architecture,
+                      "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS "
+                      "-Xfrontend -debug-time-function-bodies "
+                      f'-Xfrontend -stats-output-dir -Xfrontend "{compiler_evidence}" '
+                      "-Xfrontend -fine-grained-timers -Xfrontend -profile-stats-entities"]
             app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
+            build_evidence = run / "build-evidence"
+            build_evidence.mkdir()
+            before_test = None
+            test_log_offset = None
+
+            def build(timeout):
+                timed("build-for-testing", lambda: command(common + ["-destination", "generic/platform=iOS Simulator",
+                    "-resultBundlePath", run / "build.xcresult", "build-for-testing"], "build.log", timeout=timeout))
+
+            def prepare():
+                nonlocal before_test, test_log_offset
+                before_test = prepare_test_product(app, run / "DerivedData/Build/Products", build_evidence)
+                test_log_offset = (run / "build.log").stat().st_size
+
+            def test(timeout):
+                timed("test-without-building", lambda: command(common + ["-destination", "platform=iOS Simulator,id=" + simulator,
+                    "-resultBundlePath", run / "baseline.xcresult", "test-without-building"], "build.log", timeout=timeout))
+
+            def verify():
+                for name in ("build.xcresult", "baseline.xcresult"):
+                    if not any(path.is_file() and path.stat().st_size > 0 for path in (run / name).rglob("*")):
+                        raise ValueError("Missing Xcode result bundle: " + name)
+                with (run / "build.log").open("rb") as log:
+                    log.seek(test_log_offset)
+                    count = verify_test_product(app, before_test, log.read().decode("utf-8", errors="replace"),
+                                                build_evidence / "app-identity.json")
+                command(["bash", "buildscripts/fail_on_warnings.sh", run / "build.log"], "warnings.log", timeout=30)
+                result["actions"].append({"action": "swift-test-proof", "completedTests": count,
+                                          "binarySha256": before_test["sha256"], "architecture": architecture})
+
+            run_build_test(build, prepare, create_and_boot, test, verify)
             with (app / "Info.plist").open("rb") as info_file:
                 info = plistlib.load(info_file)
             bundle_id = info["CFBundleIdentifier"]
@@ -493,14 +605,7 @@ def main():
             return
         if not args.native_from:
             timed("shutdown-test-simulator", lambda: command(["xcrun", "simctl", "shutdown", simulator], "simulator.log", timeout=60))
-            active_simulators.remove(simulator)
-            simulator = output(["xcrun", "simctl", "create", "Feedmark-native-" + args.run_name,
-                            device_type["identifier"], runtime["identifier"]]).decode().strip()
-            owned_simulators.append(simulator)
-            active_simulators.append(simulator)
-            result["actions"].append({"action": "create-native-simulator", "simulator": simulator, "runtime": runtime["version"]})
-            timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
-            timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
+            create_and_boot(native=True)
         timed("install-native-app", lambda: command(["xcrun", "simctl", "install", simulator, app], "simulator.log", timeout=60))
         installed_app = Path(timed("locate-native-app", lambda: output(
             ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "app"])).decode().strip())
@@ -742,13 +847,8 @@ def main():
             cleanup_errors.append("OPML restoration: " + str(error))
         try:
             if owned_simulators:
-                for owned_simulator in active_simulators:
-                    command(["xcrun", "simctl", "shutdown", owned_simulator], "cleanup.log", timeout=60)
-                devices = json.loads(output(["xcrun", "simctl", "list", "devices", "--json"]))
-                states = {device["udid"]: device["state"] for group in devices["devices"].values() for device in group}
-                cleanup["simulatorStopped"] = simulators_stopped(owned_simulators, states)
-        except Exception as error:
-            cleanup_errors.append("Simulator shutdown: " + str(error))
+                cleanup["simulatorStopped"], simulator_errors = cleanup_simulators(owned_simulators, command, output)
+                cleanup_errors.extend(simulator_errors)
         finally:
             try:
                 if server:

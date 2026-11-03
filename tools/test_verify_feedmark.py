@@ -36,6 +36,118 @@ class SimulatorRuntimeTests(unittest.TestCase):
                 verify_feedmark.select_ios_runtime([], version)
 
 
+class BuildTestSequenceTests(unittest.TestCase):
+    def test_order_and_shared_budget_excludes_boot(self):
+        calls = []
+        clock = iter((0, 400, 10000, 10020)).__next__
+        verify_feedmark.run_build_test(lambda timeout: calls.append(("build", timeout)),
+                                      lambda: calls.append("prepare"), lambda: calls.append("boot"),
+                                      lambda timeout: calls.append(("test", timeout)), lambda: calls.append("verify"), clock)
+        self.assertEqual(calls, [("build", 1800), "prepare", "boot", ("test", 1400), "verify"])
+
+    def test_failed_build_boot_test_or_budget_never_reaches_acceptance(self):
+        for failing in ("build", "prepare", "boot", "test", "verify", "budget"):
+            calls = []
+            def step(name):
+                def run(*_):
+                    calls.append(name)
+                    if name == failing:
+                        raise RuntimeError(name)
+                return run
+            clock = iter((0, 1800 if failing == "budget" else 1, 2, 3)).__next__
+            with self.subTest(failing=failing), self.assertRaises((RuntimeError, TimeoutError)):
+                verify_feedmark.run_build_test(*(step(name) for name in ("build", "prepare", "boot", "test", "verify")), clock)
+                calls.append("stage")
+            self.assertNotIn("stage", calls)
+            if failing in ("build", "budget", "prepare"):
+                self.assertNotIn("boot", calls)
+            if failing in ("build", "budget", "prepare", "boot"):
+                self.assertNotIn("test", calls)
+
+    def test_late_test_cannot_pass_budget(self):
+        calls = []
+        clock = iter((0, 100, 200, 1901)).__next__
+        with self.assertRaisesRegex(TimeoutError, "exceeded"):
+            verify_feedmark.run_build_test(lambda _: None, lambda: None, lambda: None, lambda _: None,
+                                          lambda: calls.append("accepted"), clock)
+        self.assertEqual(calls, [])
+
+    def test_product_drift_and_missing_or_insufficient_test_proof_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)
+            (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "example.app", "CFBundleExecutable": "App"}))
+            (app / "App").write_bytes(b"binary")
+            before = verify_feedmark.app_identity(app)
+            receipt = app / "identity.json"
+            valid = "✔ Test run with 23 tests in 4 suites passed after 1.432 seconds.\n"
+            self.assertEqual(verify_feedmark.verify_test_product(app, before, valid, receipt), 23)
+            for bad in ("", "✔ Test run with 0 tests in 0 suites passed after 0 seconds.\n",
+                        "✔ Test run with 22 tests in 4 suites passed after 1 seconds.\n", valid + valid):
+                with self.subTest(proof=bad), self.assertRaises(ValueError):
+                    verify_feedmark.verify_test_product(app, before, bad, receipt)
+            (app / "App").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                verify_feedmark.verify_test_product(app, before, valid, receipt)
+            (app / "App").unlink()
+            with self.assertRaises(FileNotFoundError):
+                verify_feedmark.verify_test_product(app, before, valid, receipt)
+
+    def test_test_metadata_and_preboot_identity_survive_later_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, products, evidence = root / "App.app", root / "Products", root / "build-evidence"
+            for folder in (app, products, evidence):
+                folder.mkdir()
+            (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "example.app", "CFBundleExecutable": "App"}))
+            (app / "App").write_bytes(b"binary")
+            with self.assertRaisesRegex(ValueError, "xctestrun"):
+                verify_feedmark.prepare_test_product(app, products, evidence)
+            metadata = products / "plan.xctestrun"
+            metadata.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "xctestrun"):
+                verify_feedmark.prepare_test_product(app, products, evidence)
+            metadata.write_bytes(plistlib.dumps({"TestConfigurations": [{"Name": "Fixture"}]}))
+            before = verify_feedmark.prepare_test_product(app, products, evidence)
+            self.assertEqual((evidence / metadata.name).read_bytes(), metadata.read_bytes())
+            stored = verify_feedmark.json.loads((evidence / "app-identity.json").read_text())
+            self.assertEqual(stored["beforeTest"], before)
+            self.assertIsNone(stored["afterTest"])
+
+
+class SimulatorCleanupTests(unittest.TestCase):
+    @staticmethod
+    def inventory(states):
+        return verify_feedmark.json.dumps({"devices": {"iOS": [{"udid": key, "state": value}
+                                                                 for key, value in states.items()]}}).encode()
+
+    def test_only_running_owned_devices_are_stopped(self):
+        output = Mock(side_effect=[self.inventory({"test": "Shutdown", "native": "Booted", "other": "Booted"}),
+                                   self.inventory({"test": "Shutdown", "native": "Shutdown", "other": "Booted"})])
+        command = Mock()
+        stopped, errors = verify_feedmark.cleanup_simulators(["test", "native"], command, output)
+        self.assertTrue(stopped)
+        self.assertEqual(errors, [])
+        command.assert_called_once_with(["xcrun", "simctl", "shutdown", "native"], "cleanup.log", timeout=60)
+
+    def test_probe_and_shutdown_failures_do_not_skip_other_owned_devices(self):
+        output = Mock(side_effect=[subprocess.TimeoutExpired(["list"], 30),
+                                   self.inventory({"first": "Booted", "second": "Shutdown"})])
+        command = Mock(side_effect=[subprocess.TimeoutExpired(["shutdown"], 60), None])
+        stopped, errors = verify_feedmark.cleanup_simulators(["first", "second"], command, output)
+        self.assertFalse(stopped)
+        self.assertEqual(command.call_count, 2)
+        self.assertTrue(any("initial state probe" in error for error in errors))
+        self.assertTrue(any("shutdown first" in error for error in errors))
+
+    def test_unknown_owned_device_is_attempted_and_missing_final_state_fails(self):
+        output = Mock(side_effect=[self.inventory({"unrelated": "Booted"}), self.inventory({"unrelated": "Booted"})])
+        command = Mock()
+        stopped, errors = verify_feedmark.cleanup_simulators(["owned"], command, output)
+        self.assertFalse(stopped)
+        command.assert_called_once_with(["xcrun", "simctl", "shutdown", "owned"], "cleanup.log", timeout=60)
+        self.assertTrue(any("final state owned: missing" in error for error in errors))
+
+
 class InstalledAppIdentityTests(unittest.TestCase):
     def test_matching_and_mismatched_binaries(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -206,10 +318,17 @@ class EvidenceRetentionTests(unittest.TestCase):
                 path = run / pattern.replace("*", "run-time")
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(verify_feedmark.PNG_SIGNATURE if path.suffix == ".png" else b"evidence")
-            result_file = run / "baseline.xcresult" / "result"
-            result_file.parent.mkdir()
-            result_file.write_bytes(b"evidence")
+            for name in ("build.xcresult", "baseline.xcresult"):
+                result_file = run / name / "result"
+                result_file.parent.mkdir()
+                result_file.write_bytes(b"evidence")
             self.assertEqual(verify_feedmark.missing_evidence(run, True), [])
+            (run / "build.xcresult/result").unlink()
+            self.assertIn("build.xcresult/**", verify_feedmark.missing_evidence(run, False))
+            (run / "build.xcresult/result").write_bytes(b"evidence")
+            (run / "baseline.xcresult/result").unlink()
+            self.assertIn("baseline.xcresult/**", verify_feedmark.missing_evidence(run, False))
+            (run / "baseline.xcresult/result").write_bytes(b"evidence")
             (run / "notebook-removed.json").unlink()
             self.assertIn("notebook-removed.json", verify_feedmark.missing_evidence(run, True))
             self.assertEqual(verify_feedmark.missing_evidence(run, False), [])
