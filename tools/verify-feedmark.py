@@ -345,6 +345,7 @@ def main():
         command(["uname", "-a"], "doctor.log", timeout=15)
         command(["sysctl", "hw.logicalcpu", "hw.memsize"], "doctor.log", timeout=15)
         command(["xcodebuild", "-version"], "doctor.log", timeout=30)
+        command(["xcrun", "swiftc", "-version"], "doctor.log", timeout=30)
         command(["java", "-version"], "doctor.log", timeout=15)
         command(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], "simulator-sdk.log", timeout=30)
         sdk_version = (run / "simulator-sdk.log").read_text(encoding="utf-8").strip()
@@ -460,7 +461,8 @@ def main():
                  "-destination", "platform=iOS Simulator,id=" + simulator,
                  "-parallel-testing-enabled", "NO",
                  "-derivedDataPath", run / "DerivedData", "-resultBundlePath", run / "baseline.xcresult",
-                 "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS", "test"], "build.log")
+                 "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS "
+                 "-Xfrontend -debug-time-function-bodies -Xfrontend -debug-time-expression-type-checking", "test"], "build.log")
             command(["bash", "buildscripts/fail_on_warnings.sh", run / "build.log"], "warnings.log", timeout=30)
             app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
             with (app / "Info.plist").open("rb") as info_file:
