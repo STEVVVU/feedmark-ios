@@ -2,10 +2,11 @@ import importlib.util
 from pathlib import Path
 import plistlib
 import socket
+import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 
@@ -52,6 +53,37 @@ class InstalledAppIdentityTests(unittest.TestCase):
                 verify_feedmark.verify_installed_app(built, installed, receipt)
             self.assertNotEqual(verify_feedmark.json.loads(receipt.read_text())["built"]["sha256"],
                                 verify_feedmark.json.loads(receipt.read_text())["installed"]["sha256"])
+
+    def test_timeout_diagnostics_record_identity_without_accepting_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            built, installed = run / "built.app", run / "installed.app"
+            for app in (built, installed):
+                app.mkdir()
+                (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "example.app", "CFBundleExecutable": "App"}))
+                (app / "App").write_bytes(b"matching")
+            command, output = Mock(), Mock(return_value=str(installed).encode())
+            result = verify_feedmark.install_timeout_diagnostics(run, "owned-device", "example.app", built, command, output)
+            self.assertTrue(result["diagnosticOnly"])
+            self.assertEqual(result["appIdentity"]["built"]["sha256"], result["appIdentity"]["installed"]["sha256"])
+            self.assertTrue((run / "install-timeout-app.json").is_file())
+            self.assertNotIn("nativeAcceptance", result)
+            output.assert_called_once_with(["xcrun", "simctl", "get_app_container", "owned-device", "example.app", "app"])
+            self.assertEqual(command.call_count, 2)
+            self.assertTrue(all(call.kwargs["timeout"] == 30 for call in command.call_args_list))
+            self.assertEqual(command.call_args_list[1].args[0][:4], ["xcrun", "simctl", "spawn", "owned-device"])
+            self.assertFalse(any("install" in call.args[0] for call in command.call_args_list))
+
+    def test_timeout_diagnostic_failures_are_recorded_without_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = Mock(side_effect=subprocess.TimeoutExpired(["log"], 30))
+            output = Mock(side_effect=subprocess.CalledProcessError(1, ["get_app_container"]))
+            result = verify_feedmark.install_timeout_diagnostics(Path(directory), "owned", "example.app", Path(directory), command, output)
+            self.assertIn("appLookupError", result)
+            self.assertEqual(set(result["logErrors"]), {"host-install-at-failure.log", "simulator-install-at-failure.log"})
+            self.assertEqual(command.call_count, 2)
+            self.assertEqual(output.call_count, 1)
+            self.assertTrue(result["diagnosticOnly"])
 
 
 class ResultFinalizationTests(unittest.TestCase):

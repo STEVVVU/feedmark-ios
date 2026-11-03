@@ -251,6 +251,33 @@ def verify_installed_app(built_app, installed_app, receipt_path):
     return receipt
 
 
+def install_timeout_diagnostics(run, simulator, bundle_id, app, command, output):
+    receipt = {"diagnosticOnly": True, "lookupStartedUnixSeconds": time.time()}
+    started = time.monotonic()
+    try:
+        installed = Path(output(["xcrun", "simctl", "get_app_container", simulator, bundle_id, "app"]).decode().strip())
+        receipt["appIdentity"] = verify_installed_app(app, installed, run / "install-timeout-app.json")
+        receipt["installedMode"] = stat.S_IMODE((installed / receipt["appIdentity"]["installed"]["executable"]).stat().st_mode)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        receipt["appLookupError"] = str(error)
+    receipt["lookupElapsedSeconds"] = round(time.monotonic() - started, 3)
+    receipt["logErrors"] = {}
+    logs = (
+        ("host-install-at-failure.log", ["log", "show", "--style", "compact", "--last", "5m", "--predicate",
+                                         'process CONTAINS[c] "CoreSimulator" OR process == "simctl"', "--info", "--debug"]),
+        ("simulator-install-at-failure.log", ["xcrun", "simctl", "spawn", simulator, "log", "show", "--style", "compact",
+                                              "--last", "5m", "--predicate",
+                                              'process == "installd" OR process == "appinstalld" OR subsystem CONTAINS[c] "install"',
+                                              "--info", "--debug"]),
+    )
+    for filename, argv in logs:
+        try:
+            command(argv, filename, timeout=30)
+        except (OSError, subprocess.SubprocessError) as error:
+            receipt["logErrors"][filename] = str(error)
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("run_name")
@@ -676,6 +703,8 @@ def main():
         native_checks_passed = True
     except BaseException as error:
         result["error"] = str(error)
+        if isinstance(error, subprocess.TimeoutExpired) and error.cmd[:3] == ["xcrun", "simctl", "install"]:
+            result["installTimeoutDiagnostics"] = install_timeout_diagnostics(run, simulator, bundle_id, app, command, output)
         if phase_controller:
             result["failurePhaseCallbackStopped"] = phase_controller.callback_done.wait(timeout=30)
         if simulator and bundle_id and result.get("failurePhaseCallbackStopped", True):
