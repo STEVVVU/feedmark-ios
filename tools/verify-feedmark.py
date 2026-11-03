@@ -549,7 +549,7 @@ def main():
                       "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS "
                       "-Xfrontend -debug-time-function-bodies "
                       f'-Xfrontend -stats-output-dir -Xfrontend "{compiler_evidence}" '
-                      "-Xfrontend -fine-grained-timers -Xfrontend -profile-stats-entities"]
+                      "-Xfrontend -fine-grained-timers"]
             app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
             build_evidence = run / "build-evidence"
             build_evidence.mkdir()
