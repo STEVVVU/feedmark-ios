@@ -14,6 +14,27 @@ verify_feedmark = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verify_feedmark)
 
 
+class SimulatorRuntimeTests(unittest.TestCase):
+    def test_matches_sdk_minor_instead_of_highest_installed_runtime(self):
+        runtimes = [{"name": "iOS " + version, "version": version, "isAvailable": True}
+                    for version in ("26.2", "26.4.1", "26.5")]
+        self.assertEqual(verify_feedmark.select_ios_runtime(runtimes, "26.2")["version"], "26.2")
+        runtimes.append({"name": "iOS 26.2.1", "version": "26.2.1", "isAvailable": True})
+        self.assertEqual(verify_feedmark.select_ios_runtime(runtimes, "26.2")["version"], "26.2.1")
+
+    def test_missing_sdk_runtime_fails_without_fallback(self):
+        runtimes = [{"name": "iOS 26.2", "version": "26.2", "isAvailable": False},
+                    {"name": "tvOS 26.2", "version": "26.2", "isAvailable": True},
+                    {"name": "iOS 26.5", "version": "26.5", "isAvailable": True}]
+        with self.assertRaisesRegex(RuntimeError, "No installed iOS"):
+            verify_feedmark.select_ios_runtime(runtimes, "26.2")
+
+    def test_invalid_sdk_version_fails(self):
+        for version in ("26", "not a version"):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                verify_feedmark.select_ios_runtime([], version)
+
+
 class InstalledAppIdentityTests(unittest.TestCase):
     def test_matching_and_mismatched_binaries(self):
         with tempfile.TemporaryDirectory() as directory:

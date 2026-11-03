@@ -114,7 +114,7 @@ class PhaseController:
 
 
 def required_evidence(native):
-    files = ["build.log", "warnings.log", "doctor.log", "fixture-requests.json"]
+    files = ["build.log", "warnings.log", "doctor.log", "simulator-sdk.log", "fixture-requests.json"]
     if not native:
         return files
     files += ["installed-app.json", "native-article.png", "maestro.log", "campaign-junit.xml"]
@@ -201,6 +201,18 @@ def finalize_result(result, cleanup, cleanup_errors, native_checks_passed):
 
 def simulators_stopped(owned_simulators, states):
     return all(states.get(owned) == "Shutdown" for owned in owned_simulators)
+
+
+def select_ios_runtime(runtimes, sdk_version):
+    sdk_minor = tuple(int(part) for part in sdk_version.split("."))[:2]
+    if len(sdk_minor) != 2:
+        raise ValueError("Expected an iOS SDK major.minor version.")
+    matches = [runtime for runtime in runtimes if runtime.get("isAvailable")
+               and runtime["name"].startswith("iOS")
+               and tuple(int(part) for part in runtime["version"].split("."))[:2] == sdk_minor]
+    if not matches:
+        raise RuntimeError("No installed iOS simulator runtime matches SDK " + sdk_version)
+    return max(matches, key=lambda runtime: tuple(int(part) for part in runtime["version"].split(".")))
 
 
 def fixture_opml(port):
@@ -307,6 +319,8 @@ def main():
         command(["sysctl", "hw.logicalcpu", "hw.memsize"], "doctor.log", timeout=15)
         command(["xcodebuild", "-version"], "doctor.log", timeout=30)
         command(["java", "-version"], "doctor.log", timeout=15)
+        command(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], "simulator-sdk.log", timeout=30)
+        sdk_version = (run / "simulator-sdk.log").read_text(encoding="utf-8").strip()
         source = output(["git", "rev-parse", "HEAD"]).decode().strip()
         run_id = os.environ.get("GITHUB_RUN_ID", "")
         run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
@@ -340,14 +354,13 @@ def main():
                                       "deadlineSeconds": 120})
         inventory = json.loads((run / "simulator-inventory.log").read_text(encoding="utf-8"))
         (run / "simulator-inventory.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
-        runtimes = [item for item in inventory["runtimes"] if item.get("isAvailable") and item["name"].startswith("iOS")]
-        runtime = max(runtimes, key=lambda item: tuple(int(part) for part in item["version"].split(".")))
+        runtime = select_ios_runtime(inventory["runtimes"], sdk_version)
         device_type = next(item for item in inventory["devicetypes"] if item["name"] == "iPhone 17")
         simulator = output(["xcrun", "simctl", "create", "Feedmark-" + args.run_name,
                             device_type["identifier"], runtime["identifier"]]).decode().strip()
         owned_simulators.append(simulator)
         active_simulators.append(simulator)
-        result["actions"].append({"action": "doctor", "simulator": simulator, "runtime": runtime["version"]})
+        result["actions"].append({"action": "doctor", "simulator": simulator, "runtime": runtime["version"], "sdk": sdk_version})
         if args.native_from:
             timed("boot-native-simulator", lambda: command(["xcrun", "simctl", "boot", simulator], "simulator.log", timeout=60))
             timed("native-bootstatus", lambda: command(["xcrun", "simctl", "bootstatus", simulator, "-b"], "simulator.log", timeout=300))
