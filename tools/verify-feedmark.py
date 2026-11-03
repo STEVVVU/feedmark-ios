@@ -455,6 +455,9 @@ def main():
         result["actions"].append({"action": "fixture", "loopbackPort": port, "originalOpmlSha256": hashlib.sha256(original_fixture).hexdigest()})
         if not args.native_from:
             command(["bash", "buildscripts/updateSecrets.sh"], "build.log", timeout=60)
+            compiler_evidence = run / "compiler-evidence"
+            compiler_evidence.mkdir()
+            command(["xcrun", "swiftc", "-frontend", "-help-hidden"], "compiler-options.log", timeout=30)
             command(["xcodebuild", "-project", "NetNewsWire.xcodeproj", "-scheme", "NetNewsWire-iOS",
                  "-testPlan", "NetNewsWire-iOS", "-xcconfig", ".github/ios-ci-no-signing.xcconfig",
                  "-jobs", "2", "-showBuildTimingSummary",
@@ -462,7 +465,9 @@ def main():
                  "-parallel-testing-enabled", "NO",
                  "-derivedDataPath", run / "DerivedData", "-resultBundlePath", run / "baseline.xcresult",
                  "OTHER_SWIFT_FLAGS=$(inherited) -DDEBUG -DSKIP_APP_GROUP_ACCESS "
-                 "-Xfrontend -debug-time-function-bodies -Xfrontend -debug-time-expression-type-checking", "test"], "build.log")
+                 "-Xfrontend -debug-time-function-bodies "
+                 f'-Xfrontend -stats-output-dir -Xfrontend "{compiler_evidence}" '
+                 "-Xfrontend -fine-grained-timers -Xfrontend -profile-stats-entities", "test"], "build.log")
             command(["bash", "buildscripts/fail_on_warnings.sh", run / "build.log"], "warnings.log", timeout=30)
             app = run / "DerivedData/Build/Products/Debug-iphonesimulator/NetNewsWire.app"
             with (app / "Info.plist").open("rb") as info_file:

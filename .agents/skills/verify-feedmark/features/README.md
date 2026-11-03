@@ -12,3 +12,5 @@ Current full-flow attempt 41554682942 passed the producer's lint, 13 driver test
 The diagnostic run 41558584026 stopped earlier: lint and 15 driver tests passed, but `AccountStatsView.body` exceeded the unchanged 800 ms compiler gate at 833 ms. Explicit existing closure element types are the next compiler candidate; no view composition or feature acceptance changed. Full native proof and the hosted diagnostic branch remain pending.
 
 Run 41561395578 then stopped in `manualRefresh` at 1,257 ms against 800 ms. Function/expression CPU timing output and the exact compiler version are now retained for a build-only investigation. These timings do not prove native behavior or a compiler performance improvement. All native paths remain required before restoring the project to the résumé.
+
+Run 41564626328 reports Apple Swift 6.2.4 and a 1,116.29 ms enclosing function, with individually small expression timers. The next diagnostic uses built-in request/entity profiling retained in `compiler-evidence/` to investigate the broader scope. No source cause, native acceptance or measured improvement is inferred from that gap.
