@@ -23,9 +23,9 @@ struct AccountStatsView: View {
 
 	var body: some View {
 		List {
-			ForEach(rows, id: \.accountID) { row in
+			ForEach(rows, id: \.accountID) { (row: AccountStatsRowData) in
 				Section {
-					ForEach(statItems(databaseSizeBytes: row.databaseSizeBytes, feedCount: row.feedCount, folderCount: row.folderCount, articleCount: row.articleCount, statusesCount: row.statusesCount, unreadCount: row.unreadCount, starredCount: row.starredCount)) { item in
+					ForEach(statItems(databaseSizeBytes: row.databaseSizeBytes, feedCount: row.feedCount, folderCount: row.folderCount, articleCount: row.articleCount, statusesCount: row.statusesCount, unreadCount: row.unreadCount, starredCount: row.starredCount)) { (item: StatItem) in
 						statsRow(item, isBold: false)
 					}
 					.foregroundStyle(row.isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
@@ -36,7 +36,7 @@ struct AccountStatsView: View {
 
 			if let totals, rows.count > 1 {
 				Section {
-					ForEach(statItems(databaseSizeBytes: totals.databaseSizeBytes, feedCount: totals.feedCount, folderCount: totals.folderCount, articleCount: totals.articleCount, statusesCount: totals.statusesCount, unreadCount: totals.unreadCount, starredCount: totals.starredCount)) { item in
+					ForEach(statItems(databaseSizeBytes: totals.databaseSizeBytes, feedCount: totals.feedCount, folderCount: totals.folderCount, articleCount: totals.articleCount, statusesCount: totals.statusesCount, unreadCount: totals.unreadCount, starredCount: totals.starredCount)) { (item: StatItem) in
 						statsRow(item, isBold: true)
 					}
 				} header: {

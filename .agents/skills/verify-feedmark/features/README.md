@@ -8,3 +8,5 @@
 Use `python tools/verify-feedmark.py <unique-run-name>` only on the dedicated macOS hosted runner. Do not mark cloned upstream features as original work. Update this map when behavior changes; use PStack's maintain-verification-skill workflow for broader driver drift.
 
 Current full-flow attempt 41554682942 passed the producer's lint, 13 driver tests, 23 Swift tests, warning gate and artifact/cleanup checks, then failed installation on the fresh SDK-matched iOS 26.2 simulator at the unchanged 60-second limit. No native feature phase ran. Installation-timeout diagnostics now retain service logs and a diagnostic-only app-identity lookup; their hosted execution and all eight native phases remain pending. A later installed app never converts the timeout into acceptance.
+
+The diagnostic run 41558584026 stopped earlier: lint and 15 driver tests passed, but `AccountStatsView.body` exceeded the unchanged 800 ms compiler gate at 833 ms. Explicit existing closure element types are the next compiler candidate; no view composition or feature acceptance changed. Full native proof and the hosted diagnostic branch remain pending.
